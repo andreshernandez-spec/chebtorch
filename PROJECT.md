@@ -190,6 +190,7 @@ measured worthwhile.
 
 ```
 PROJECT.md, CLAUDE.md, README.md, LICENSE (BSD-3)
+docs/coding-style.md    the review standard, adapted from chebax's
 pyproject.toml          pure python, requires torch only
 src/chebtorch/
     __init__.py         lazy re-exports (PEP 562), so `import chebtorch` loads no tables

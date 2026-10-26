@@ -59,8 +59,12 @@ def tweedie_differences(p, seed):
     tm, tf, ty = (torch.tensor(a, requires_grad=True) for a in (mu, phi, y))
     got = tweedie_logpdf(tp, tm, tf, ty)
     got.sum().backward()
-    assert np.isfinite(ref).all()
+    # nonfinite values first: the max below would not show them
+    for a in (ref, gp, gm, gf, got.detach().numpy(), tm.grad.numpy(), tf.grad.numpy()):
+        assert np.isfinite(a).all()
+    assert np.isfinite(tp.grad.item())
     pos = y > 0
+    assert np.isfinite(gy[pos]).all() and np.isfinite(ty.grad.numpy()[pos]).all()
     return {
         "f": _rel(got.detach().numpy(), ref).max(),
         "dp": abs(tp.grad.item() - gp.sum()) / np.maximum(1.0, np.abs(gp)).sum(),
@@ -82,6 +86,9 @@ def wright_differences(seed):
     tz = torch.tensor(z, requires_grad=True)
     got = log_wright_bessel0(tr, tz)
     got.sum().backward()
+    for a in (ref, gr, gz, got.detach().numpy(), tz.grad.numpy()):
+        assert np.isfinite(a).all()
+    assert np.isfinite(tr.grad.item())
     return {
         "w": _rel(got.detach().numpy(), ref).max(),
         "dz": (np.abs(tz.grad.numpy() - gz) / np.abs(gz)).max(),

@@ -1,9 +1,10 @@
 # Copyright (c) 2026, Andres Hernandez
-# SPDX-License-Identifier: BSD-3-Clause (https://github.com/andreshernandez-spec/chebtorch)
+# SPDX-License-Identifier: BSD-3-Clause
+# From chebtorch: https://github.com/andreshernandez-spec/chebtorch
 """Tweedie log-density for power 1.05 <= p <= 1.95, and Wright's
-Phi(rho, 0; z) underneath it. From chebtorch; to use it elsewhere, copy it
-with _tweedie_data.py (its tables and their provenance) and cheb_common.py
-into one package directory. The three import only math, torch and each other.
+Phi(rho, 0; z) underneath it. To use it elsewhere, copy it with
+_tweedie_data.py (its tables and their provenance) and cheb_common.py into one
+package directory. The three import only math, torch and each other.
 
 The compound Poisson-gamma Tweedie law with mean mu, dispersion phi and power
 p in (1, 2) puts mass exp(-lambda) at 0 and has, for y > 0,
@@ -12,18 +13,16 @@ p in (1, 2) puts mass exp(-lambda) at 0 and has, for y > 0,
     lambda = mu^(2-p) / (phi (2-p)),  theta = phi (p-1) mu^(p-1),
     rho = (2-p)/(p-1),  z = lambda (y/theta)^rho.
 
-Two regions in Z = y^(2-p) / (phi (2-p)(p-1)), split at Z1 = 12 + 2 (1+rho)^2:
-below it W is its own series, 64 terms summed in log space; above it the
+Two regions in Z = y^(2-p) / (phi (2-p)(p-1)), split at Z1 = 12 + 2 (1+rho)^2.
+Below it W is its own series, 64 terms summed in log space. Above it the
 density is exactly the saddlepoint approximation
 -d(y, mu)/(2 phi) - ln(2 pi phi y^p)/2 (d the unit deviance) plus a tabulated
-correction T(ln rho, Z1/Z)/Z. chebax (chebax._src.recipes.tweedie_gen) has the
-measurements behind the split and the table.
-
-p is a scalar (python number or one-element tensor), uniform per call; mu,
-phi and y broadcast. A python p outside [1.05, 1.95] raises; a tensor p
-outside it, mu <= 0, phi <= 0 or y < 0 give nan. Differentiable in p, mu,
-phi and y (y only where y > 0), to second order. Computes in the inputs'
-float dtype (half precision through float32).
+correction T/Z. T is a Chebyshev series in x = 2 Z1/Z - 1 (32 coefficients;
+x = -1 is Z -> inf), each coefficient a Chebyshev series in
+t = ln(rho)/ln(19) (64 coefficients); both coordinates span [-1, 1] over the
+box. The fixtures straddle the seam at Z1 (1 -+ 1e-9). chebax
+(chebax._src.recipes.tweedie_gen) has the measurements behind the split and
+the table.
 
 Accuracy against mpmath at 40 digits, |err| / max(1, |ref|), worst cases in
 float64: ln W 7e-16, the density 8e-13, d/dp 6e-11, and 7e-12 for the
@@ -39,7 +38,8 @@ import torch
 from torch.distributions import constraints
 
 from .cheb_common import Tables, cheb, device_of, scalar, work_dtype
-from ._tweedie_data import A1, DATA, N_TERMS, P_HI, P_LO, RHO_MAX, RHO_MIN, S1, SHAPES, ZA
+from ._tweedie_data import (A1, DATA, N_TERMS, P_HI, P_LO, RHO_MAX, RHO_MIN, S1,
+                            SHAPES, ZA)
 
 __all__ = ["Tweedie", "log_wright_bessel0", "tweedie_logpdf"]
 
@@ -70,7 +70,7 @@ class _LogSeries(torch.autograd.Function):
     """The series with its analytic backward. Autograd through the unrolled
     sum would keep every term for the backward pass; this keeps two arrays.
     With create_graph the derivatives are recomputed with tracked ops, so
-    second derivatives are exact too."""
+    second derivatives are exact too. No jvp, so no forward mode."""
 
     @staticmethod
     def forward(ctx, rho, u):
@@ -86,42 +86,11 @@ class _LogSeries(torch.autograd.Function):
         return (grad * d_rho).sum(), grad * d_u
 
 
-def _split(r):
-    """Z1(rho) and the tail table's s-coefficients at this rho."""
-    z1 = ZA + S1 * (1 + r) ** 2
-    coefs = cheb(torch.log(r) / A1, _tables("TABLE_TAIL", r.dtype, r.device).T)
+def _split(rho):
+    """Z1 and the tail series' 32 coefficients in x at this rho."""
+    z1 = ZA + S1 * (1 + rho) ** 2
+    coefs = cheb(torch.log(rho) / A1, _tables("TABLE_TAIL", rho.dtype, rho.device).T)
     return z1, coefs
-
-
-def log_wright_bessel0(rho, z):
-    """ln Phi(rho, 0; z), Wright's generalized Bessel function at beta = 0.
-
-    rho is a scalar in [1/19, 19], uniform per call; z >= 0 any tensor.
-    -inf at z = 0 (Phi(rho, 0; 0) = 0), nan for z < 0 or rho outside the box.
-    """
-    work, out = work_dtype(z, rho)
-    dev = device_of(z, rho)
-    z = torch.as_tensor(z, dtype=work, device=dev)
-    rho = scalar(rho, work, dev, "log_wright_bessel0", "rho", RHO_MIN, RHO_MAX)
-    ok = (rho >= RHO_MIN) & (rho <= RHO_MAX)
-    r = torch.where(ok, rho, torch.ones_like(rho))
-    z1, coefs = _split(r)
-    pos = z > 0
-    zs = torch.where(pos, z, torch.ones_like(z))
-    lr = torch.log(r)
-    # pow keeps Z to an ulp where exp((lr + ln z)/(1+rho)) would carry
-    # eps |ln z|; z^e cannot overflow for e < 1
-    e = 1 / (1 + r)
-    big_z = (1 + r) / r * torch.pow(r, e) * torch.pow(zs, e)
-    inner = big_z <= z1
-    u1 = (1 + r) * torch.log(r * z1 / (1 + r)) - lr
-    w_in = _LogSeries.apply(r, torch.where(inner, torch.log(zs), u1))
-    zt = torch.where(inner, z1, big_z)
-    w_tail = (zt + 0.5 * torch.log(r * zt / (1 + r)) - _HALF_LOG_2PI
-              - 0.5 * torch.log1p(r) + cheb(2 * (z1 / zt) - 1, coefs) / zt)
-    res = torch.where(inner, w_in, w_tail)
-    res = torch.where(pos, res, torch.where(z == 0, -math.inf, math.nan))
-    return torch.where(ok, res, math.nan).to(out)
 
 
 def _half_deviance(a, mu, y):
@@ -129,18 +98,99 @@ def _half_deviance(a, mu, y):
     cancellation of eps a |ln(y/mu)| relative to Z; pow elsewhere."""
     x = torch.log(y) - torch.log(mu)
     near = x.abs() < 1
-    xn = torch.where(near, x, torch.zeros_like(x))
-    r = y / mu
-    num = torch.where(near, torch.expm1(a * xn) - a * torch.expm1(xn),
-                      (torch.pow(r, a) - 1) - a * (r - 1))
+    x_near = torch.where(near, x, torch.zeros_like(x))
+    ratio = y / mu
+    num = torch.where(near, torch.expm1(a * x_near) - a * torch.expm1(x_near),
+                      (torch.pow(ratio, a) - 1) - a * (ratio - 1))
     return torch.pow(mu, a) * num / (a * (a - 1))
 
 
-def tweedie_logpdf(p, mu, phi, y):
-    """ln of the Tweedie density at y, power p in [1.05, 1.95].
+def _log_w(rho, z):
+    """ln Phi(rho, 0; z) for rho in the box and z > 0."""
+    z1, coefs = _split(rho)
+    # pow keeps Z to an ulp where exp((ln rho + ln z)/(1+rho)) would carry
+    # eps |ln z|; z^e cannot overflow for e < 1
+    e = 1 / (1 + rho)
+    big_z = (1 + rho) / rho * torch.pow(rho, e) * torch.pow(z, e)
+    inner = big_z <= z1
+    # each branch gets inputs from its own region: the series runs at the
+    # split in tail lanes, the tail formula at Z1 in inner lanes
+    u1 = (1 + rho) * torch.log(rho * z1 / (1 + rho)) - torch.log(rho)
+    log_w_inner = _LogSeries.apply(rho, torch.where(inner, torch.log(z), u1))
+    zt = torch.where(inner, z1, big_z)
+    log_w_tail = (zt + 0.5 * torch.log(rho * zt / (1 + rho)) - _HALF_LOG_2PI
+                  - 0.5 * torch.log1p(rho) + cheb(2 * (z1 / zt) - 1, coefs) / zt)
+    return torch.where(inner, log_w_inner, log_w_tail)
 
-    At y = 0 this is ln P(Y = 0) = -lambda, the point mass; for y > 0 the
-    density. p is a scalar; mu, phi and y broadcast.
+
+def _log_density(p, mu, phi, y):
+    """(ln f(y), lambda) for p in the box and mu, phi, y > 0."""
+    rho = (2 - p) / (p - 1)
+    a = 2 - p
+    lam = torch.pow(mu, a) / (phi * a)
+    z1, coefs = _split(rho)
+    big_z = torch.pow(y, a) / (phi * a * (p - 1))
+    inner = big_z <= z1
+    # inner: the density as defined, ln W on u = ln z. Tail lanes run it at
+    # y = mu and the series at the split, where nothing overflows
+    y_inner = torch.where(inner, y, mu)
+    log_theta = torch.log(phi * (p - 1)) + (p - 1) * torch.log(mu)
+    u = torch.log(lam) + rho * (torch.log(y_inner) - log_theta)
+    u1 = (1 + rho) * torch.log(rho * z1 / (1 + rho)) - torch.log(rho)
+    log_f_inner = (-lam - torch.exp(torch.log(y_inner) - log_theta)
+                   - torch.log(y_inner)
+                   + _LogSeries.apply(rho, torch.where(inner, u, u1)))
+    # tail: the saddlepoint form plus the tabulated correction
+    zt = torch.where(inner, z1, big_z)
+    log_f_tail = (-_half_deviance(a, mu, y) / phi
+                  - 0.5 * (torch.log(phi) + p * torch.log(y)) - _HALF_LOG_2PI
+                  + cheb(2 * (z1 / zt) - 1, coefs) / zt)
+    return torch.where(inner, log_f_inner, log_f_tail), lam
+
+
+def log_wright_bessel0(rho, z):
+    """ln Phi(rho, 0; z), Wright's generalized Bessel function at beta = 0.
+
+    rho is a scalar in [1/19, 19] (python number or one-element tensor),
+    uniform per call; z >= 0 is a tensor or number. Computes in the widest
+    floating dtype among the arguments, else the default dtype (float16 and
+    bfloat16 through float32), on the device of the first tensor argument.
+
+    z = 0 gives -inf (Phi(rho, 0; 0) = 0). z < 0, nan and a tensor rho outside
+    the box give nan; a python rho outside it raises ValueError.
+
+    Differentiable in rho and z, to second order, in reverse mode only:
+    forward mode (torch.func.jvp, torch.autograd.forward_ad) is not
+    implemented.
+    """
+    work, out = work_dtype(z, rho)
+    dev = device_of(z, rho)
+    z = torch.as_tensor(z, dtype=work, device=dev)
+    rho = scalar(rho, work, dev, "log_wright_bessel0", "rho", RHO_MIN, RHO_MAX)
+    in_box = (rho >= RHO_MIN) & (rho <= RHO_MAX)
+    positive = z > 0
+    # stand-ins for the lanes the result masks, so no branch sees them
+    log_w = _log_w(torch.where(in_box, rho, torch.ones_like(rho)),
+                   torch.where(positive, z, torch.ones_like(z)))
+    log_w = torch.where(positive, log_w, torch.where(z == 0, -math.inf, math.nan))
+    return torch.where(in_box, log_w, math.nan).to(out)
+
+
+def tweedie_logpdf(p, mu, phi, y):
+    """ln of the Tweedie density at y, for power p in [1.05, 1.95].
+
+    For y > 0 the log-density; at y = 0, ln P(Y = 0) = -lambda, the point
+    mass. p is a scalar (python number or one-element tensor), uniform per
+    call; mu > 0, phi > 0 and y >= 0 broadcast against each other. Computes in
+    the widest floating dtype among the arguments, else the default dtype
+    (float16 and bfloat16 through float32), on the device of the first tensor
+    argument.
+
+    mu <= 0, phi <= 0, y < 0, nan and a tensor p outside the box give nan; a
+    python p outside it raises ValueError.
+
+    Differentiable in p, mu, phi and y (y only where y > 0), to second order,
+    in reverse mode only: forward mode is not implemented.
     """
     work, out = work_dtype(y, mu, phi, p)
     dev = device_of(y, mu, phi, p)
@@ -151,35 +201,18 @@ def tweedie_logpdf(p, mu, phi, y):
     p = scalar(p, work, dev, "tweedie_logpdf", "p", P_LO, P_HI)
     # the box is checked on p as given: in float32, p = 1.05 rounds to
     # 1.04999995, whose rho is just past RHO_MAX
-    ok = (p >= P_LO) & (p <= P_HI)
-    pp = torch.where(ok, p, torch.full_like(p, 1.5))
-    r = (2 - pp) / (pp - 1)
-    a = 2 - pp
+    in_box = (p >= P_LO) & (p <= P_HI)
     valid = (mu > 0) & (phi > 0) & (y >= 0)
+    positive = valid & (y > 0)
+    # stand-ins for the lanes the result masks, so no branch sees them
     one = torch.ones_like(y)
     mu_s = torch.where(valid, mu, one)
-    phi_s = torch.where(valid, phi, one)
-    pos = valid & (y > 0)
-    y_s = torch.where(pos, y, mu_s)
-    lam = torch.pow(mu_s, a) / (phi_s * a)
-    z1, coefs = _split(r)
-    big_z = torch.pow(y_s, a) / (phi_s * a * (pp - 1))
-    inner = big_z <= z1
-    # inner: the density as defined, ln W on u = ln z
-    lt = torch.log(phi_s * (pp - 1)) + (pp - 1) * torch.log(mu_s)
-    u = torch.log(lam) + r * (torch.log(y_s) - lt)
-    u1 = (1 + r) * torch.log(r * z1 / (1 + r)) - torch.log(r)
-    f_in = (-lam - torch.exp(torch.log(y_s) - lt) - torch.log(y_s)
-            + _LogSeries.apply(r, torch.where(inner, u, u1)))
-    # tail: saddlepoint form plus the tabulated correction
-    zt = torch.where(inner, z1, big_z)
-    f_tail = (-_half_deviance(a, mu_s, y_s) / phi_s
-              - 0.5 * (torch.log(phi_s) + pp * torch.log(y_s)) - _HALF_LOG_2PI
-              + cheb(2 * (z1 / zt) - 1, coefs) / zt)
-    res = torch.where(inner, f_in, f_tail)
-    res = torch.where(pos, res, -lam)
-    res = torch.where(valid, res, math.nan)
-    return torch.where(ok, res, math.nan).to(out)
+    log_f, lam = _log_density(torch.where(in_box, p, torch.full_like(p, 1.5)),
+                              mu_s, torch.where(valid, phi, one),
+                              torch.where(positive, y, mu_s))
+    log_f = torch.where(positive, log_f, -lam)
+    log_f = torch.where(valid, log_f, math.nan)
+    return torch.where(in_box, log_f, math.nan).to(out)
 
 
 class Tweedie(torch.distributions.Distribution):
@@ -187,8 +220,10 @@ class Tweedie(torch.distributions.Distribution):
 
     Y is exactly 0 with probability exp(-mu^(2-p) / (phi (2-p))) and positive
     and continuous otherwise. Mean mu, variance phi mu^power. mu and phi
-    broadcast; power is a scalar. Sampling draws the Poisson count and a gamma
-    total; it is not reparameterized (the count is discrete).
+    broadcast; power is a scalar in [1.05, 1.95], checked as in
+    tweedie_logpdf, which log_prob is (same dtype, derivative and nan rules).
+    Sampling draws the Poisson count and a gamma total; it is not
+    reparameterized (the count is discrete).
     """
 
     arg_constraints = {"mu": constraints.positive, "phi": constraints.positive}

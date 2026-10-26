@@ -1,8 +1,14 @@
 # Copyright (c) 2026, Andres Hernandez
-# SPDX-License-Identifier: BSD-3-Clause (https://github.com/andreshernandez-spec/chebtorch)
+# SPDX-License-Identifier: BSD-3-Clause
+# From chebtorch: https://github.com/andreshernandez-spec/chebtorch
 """Helpers every chebtorch family imports: Clenshaw evaluation, the table
 cache, dtype and device resolution, and the check for parameters that are
 uniform per call. Imports only torch.
+
+Chebyshev coefficients follow numpy.polynomial: plain c[0], lowest degree
+first, the coordinate mapped to [-1, 1] by the caller. The names here carry no
+underscore so families can import them, but they are internal: chebtorch's API
+is what chebtorch exports.
 
 A project that copies a family copies this file next to it, under this name,
 which is specific enough not to clash with the project's own modules.
@@ -32,7 +38,8 @@ class Tables:
         key = (name, dtype, device)
         t = self._cache.get(key)
         if t is None:
-            t = torch.tensor(self._data[name], dtype=torch.float64).reshape(self._shapes[name])
+            t = torch.tensor(self._data[name], dtype=torch.float64)
+            t = t.reshape(self._shapes[name])
             t = self._cache[key] = t.to(dtype=dtype, device=device)
         return t
 
