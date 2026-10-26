@@ -307,6 +307,28 @@ def test_distribution():
 
 def test_torch_compile_matches_eager():
     y = _t([0.0, 0.05, 1.3, 4.0, 300.0])
+    # one graph: python numbers must not break it, as an .item() would
+    # (fullgraph=True does not catch that one, it only warns)
+    explained = torch._dynamo.explain(tweedie_logpdf)(1.37, 2.0, 0.8, y)
+    assert explained.graph_break_count == 0
     eager = tweedie_logpdf(1.37, 2.0, 0.8, y)
     compiled = torch.compile(tweedie_logpdf)(1.37, 2.0, 0.8, y)
     torch.testing.assert_close(compiled, eager, rtol=0, atol=1e-14)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@pytest.mark.filterwarnings("ignore:Synchronization debug mode")
+def test_python_numbers_do_not_wait_for_the_gpu():
+    # torch.tensor(1.4, device="cuda") waits for all queued GPU work, on
+    # every call; the tables are copied once, in the first call here
+    y = torch.tensor([0.0, 0.3, 2.0, 40.0], device="cuda")
+    mu = torch.full_like(y, 2.0, requires_grad=True)
+    tweedie_logpdf(1.4, mu, 0.8, y)
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        tweedie_logpdf(1.4, mu, 0.8, y).sum().backward()
+        tweedie_logpdf(1.4, 2.0, 0.8, y)
+        log_wright_bessel0(1.0, y + 1)
+        Tweedie(mu, 0.8, 1.4, validate_args=False).log_prob(y)
+    finally:
+        torch.cuda.set_sync_debug_mode(0)

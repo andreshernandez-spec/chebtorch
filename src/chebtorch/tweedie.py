@@ -37,7 +37,7 @@ import math
 import torch
 from torch.distributions import constraints
 
-from .cheb_common import Tables, cheb, device_of, scalar, work_dtype
+from .cheb_common import Tables, cheb, device_of, scalar, tensor_of, work_dtype
 from ._tweedie_data import (A1, DATA, N_TERMS, P_HI, P_LO, RHO_MAX, RHO_MIN, S1,
                             SHAPES, ZA)
 
@@ -169,7 +169,7 @@ def log_wright_bessel0(rho, z):
     """
     work, out = work_dtype(z, rho)
     dev = device_of(z, rho)
-    z = torch.as_tensor(z, dtype=work, device=dev)
+    z = tensor_of(z, work, dev)
     rho = scalar(rho, work, dev, "log_wright_bessel0", "rho", RHO_MIN, RHO_MAX)
     in_box = (rho >= RHO_MIN) & (rho <= RHO_MAX)
     positive = z > 0
@@ -198,9 +198,9 @@ def tweedie_logpdf(p, mu, phi, y):
     """
     work, out = work_dtype(y, mu, phi, p)
     dev = device_of(y, mu, phi, p)
-    # dtype= at creation: as_tensor(0.7).to(float64) would round 0.7 through
-    # float32 first
-    mu, phi, y = (torch.as_tensor(v, dtype=work, device=dev) for v in (mu, phi, y))
+    # created in the working dtype: as_tensor(0.7).to(float64) would round
+    # 0.7 through float32 first
+    mu, phi, y = (tensor_of(v, work, dev) for v in (mu, phi, y))
     mu, phi, y = torch.broadcast_tensors(mu, phi, y)
     p = scalar(p, work, dev, "tweedie_logpdf", "p", P_LO, P_HI)
     # the box is checked on p as given: in float32, p = 1.05 rounds to
@@ -237,7 +237,7 @@ class Tweedie(torch.distributions.Distribution):
     def __init__(self, mu, phi, power, validate_args=None):
         work, _ = work_dtype(mu, phi, power)
         dev = device_of(mu, phi, power)
-        mu, phi = (torch.as_tensor(v, dtype=work, device=dev) for v in (mu, phi))
+        mu, phi = (tensor_of(v, work, dev) for v in (mu, phi))
         self.mu, self.phi = torch.broadcast_tensors(mu, phi)
         self.power = scalar(power, work, dev, "Tweedie", "power", P_LO, P_HI)
         super().__init__(self.mu.shape, validate_args=validate_args)

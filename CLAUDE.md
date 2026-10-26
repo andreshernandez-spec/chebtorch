@@ -53,7 +53,10 @@ main.
   numbers. Floors here can differ from chebax's: torch's lgamma, pow and exp are
   not XLA's.
 - **Create tensors in the working dtype.** `torch.as_tensor(0.7).to(torch.float64)`
-  rounds 0.7 through float32 first; always pass `dtype=` at creation.
+  rounds 0.7 through float32 first; always pass `dtype=` at creation. Turn
+  arguments into tensors with `cheb_common.tensor_of`: `torch.tensor(1.5,
+  device="cuda")` copies from the host and waits for all queued GPU work, on
+  every call (tests/test_tweedie.py checks this under sync debug mode).
 - **Performance claims cite a script in `benchmarks/` and its dated result.** Pass
   the data to a jitted or compiled function as an argument: a closed-over tensor is
   a constant the compiler can fold.

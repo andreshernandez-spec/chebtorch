@@ -87,11 +87,13 @@ backward pass multiplies a zero by its own derivative, and 0 * inf is nan.
 Keep the raw input in the branch that is selected, so derivatives at a seam
 are not split by a clamp. Keep logarithmic forms until the final result.
 
-Create tensors in the working dtype (`torch.as_tensor(v, dtype=work)`):
-`torch.as_tensor(0.7).to(torch.float64)` rounds through float32 first. Library
-code makes no host syncs (`.item()`, Python branching on tensor values), so
-calls stay asynchronous and trace under `torch.compile`. Python numbers and
-integer tensors promote to the working floating dtype.
+Create tensors in the working dtype (`tensor_of(v, work, device)` from
+`cheb_common.py`): `torch.as_tensor(0.7).to(torch.float64)` rounds through
+float32 first. Library code makes no host syncs (`.item()`, Python branching on
+tensor values, `torch.tensor(v, device="cuda")` from a python number, which
+waits for all queued GPU work), so calls stay asynchronous and trace under
+`torch.compile`. Python numbers and integer tensors promote to the working
+floating dtype.
 
 ## Tests and review
 

@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # From chebtorch: https://github.com/andreshernandez-spec/chebtorch
 """Helpers every chebtorch family imports: Clenshaw evaluation, the table
-cache, dtype and device resolution, and the check for parameters that are
-uniform per call. Imports only torch.
+cache, dtype and device resolution, tensors from arguments without a host
+sync, and the check for parameters that are uniform per call. Imports only
+torch.
 
 Chebyshev coefficients follow numpy.polynomial: plain c[0], lowest degree
 first, the coordinate mapped to [-1, 1] by the caller. The names here carry no
@@ -66,6 +67,19 @@ def device_of(*xs):
     return torch.device("cpu")
 
 
+def tensor_of(v, dtype, device):
+    """v as a tensor in dtype on device. A python number is filled in on the
+    device: torch.tensor(v, device="cuda") copies it from the host, which
+    waits for all queued GPU work. A number beyond dtype's largest is inf,
+    where torch.full would raise."""
+    if isinstance(v, (int, float)):
+        v = float(v)
+        if abs(v) > torch.finfo(dtype).max:
+            v = float("inf") if v > 0 else -float("inf")
+        return torch.full((), v, dtype=dtype, device=device)
+    return torch.as_tensor(v, dtype=dtype, device=device)
+
+
 def scalar(v, dtype, device, who, name, lo, hi):
     """A uniform-per-call parameter as a 0-d tensor. A python number is
     checked against the box here; a tensor is not (it may be traced) and
@@ -73,7 +87,7 @@ def scalar(v, dtype, device, who, name, lo, hi):
     if not isinstance(v, torch.Tensor):
         if not lo <= float(v) <= hi:
             raise ValueError(f"{who} covers {name} in [{lo}, {hi}], got {v}")
-        return torch.tensor(float(v), dtype=dtype, device=device)
+        return tensor_of(float(v), dtype, device)
     if v.numel() != 1:
         raise ValueError(f"{who} takes {name} as a scalar (uniform per call), "
                          f"got shape {tuple(v.shape)}")

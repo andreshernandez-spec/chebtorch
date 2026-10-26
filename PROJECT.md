@@ -138,8 +138,10 @@ DATA = {"TABLE_TAIL": (0.98969..., ...)}
 
 - Computes in the input's dtype: float64 or float32. float16 and bfloat16 go through
   float32 and come back. Tables are cached per (dtype, device) on first use.
-- No host syncs: no `.item()`, no Python branching on tensor values, so it runs
-  asynchronously on GPU and traces under `torch.compile`.
+- No host syncs: no `.item()`, no Python branching on tensor values, and python
+  numbers are filled in on the device rather than copied from the host (a
+  blocking copy waits for all queued GPU work), so it runs asynchronously on GPU
+  and traces under `torch.compile`.
 - Out of the box or invalid input gives nan, as in chebax. Python-number parameters
   are also checked eagerly and raise `ValueError` with the box in the message.
 
