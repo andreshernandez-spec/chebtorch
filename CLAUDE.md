@@ -1,9 +1,11 @@
 # CLAUDE.md: operating instructions for chebtorch
 
-Read `PROJECT.md` first (design, the vendoring contract, milestones). Read
-`../CLAUDE.md` before anything else: the OSS git identity, the `gh` rules, never
-pushing to upstream projects, the `open-source` conda env, and the writing style
-all apply here. PyPI releases are Andres's action.
+Read `PROJECT.md` first (design, the vendoring contract, milestones), and
+follow `docs/coding-style.md` (adapted from chebax's) for formatting, naming,
+docstrings, numerics and tests. Read `../CLAUDE.md` before anything else: the
+OSS git identity, the `gh` rules, never pushing to upstream projects, the
+`open-source` conda env, and the writing style all apply here. PyPI releases
+are Andres's action.
 
 ## What this repo is, and is not
 
@@ -51,8 +53,7 @@ main.
   numbers. Floors here can differ from chebax's: torch's lgamma, pow and exp are
   not XLA's.
 - **Create tensors in the working dtype.** `torch.as_tensor(0.7).to(torch.float64)`
-  rounds 0.7 through float32 first; always pass `dtype=` at creation (found the
-  hard way, 2026-10-26).
+  rounds 0.7 through float32 first; always pass `dtype=` at creation.
 - **Performance claims cite a script in `benchmarks/` and its dated result.** Pass
   the data to a jitted or compiled function as an argument: a closed-over tensor is
   a constant the compiler can fold.
