@@ -1,5 +1,6 @@
 # Copyright (c) 2026, Andres Hernandez
-# SPDX-License-Identifier: BSD-3-Clause (https://github.com/andreshernandez-spec/chebtorch)
+# SPDX-License-Identifier: BSD-3-Clause
+# From chebtorch: https://github.com/andreshernandez-spec/chebtorch
 """chebtorch: chebax's special functions and distributions for PyTorch,
 inference only.
 

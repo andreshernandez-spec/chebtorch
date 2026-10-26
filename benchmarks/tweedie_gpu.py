@@ -46,8 +46,9 @@ WHAT IT DOES NOT ESTABLISH
 --------------------------
 Anything about other GPUs (this runs on whatever cuda:0 is; consumer parts run
 float64 at 1:64), CPU speed, or training quality: the saddle's error here is
-per observation, and what it does to a fitted p is a separate question. Times are medians of single synchronized calls, so they
-include launch overhead, which is most of the eager chebtorch time.
+per observation, and what it does to a fitted p is a separate question.
+Times are medians of single synchronized calls, so they include launch
+overhead, which is most of the eager chebtorch time.
 
 Run:  python benchmarks/tweedie_gpu.py   (~10 min, most of it compiling)
 """
@@ -89,7 +90,8 @@ def saddle_ll(p, mu, phi, y):
     ys = torch.where(pos, y, torch.ones_like(y))
     half_dev = (torch.where(pos, ys ** a / ((1 - p) * a), torch.zeros_like(y))
                 - y * mu ** (1 - p) / (1 - p) + mu ** a / a)
-    norm = torch.where(pos, 0.5 * torch.log(2 * math.pi * phi * ys ** p), torch.zeros_like(y))
+    norm = torch.where(pos, 0.5 * torch.log(2 * math.pi * phi * ys ** p),
+                       torch.zeros_like(y))
     return -half_dev / phi - norm
 
 
@@ -101,7 +103,8 @@ def exact_nll(p, mu, phi, y):
     return -chebtorch.tweedie_logpdf(p, mu, phi, y).mean()
 
 
-LOSSES = {"kernel (neuralforecast)": kernel_nll, "saddle": saddle_nll, "chebtorch": exact_nll}
+LOSSES = {"kernel (neuralforecast)": kernel_nll, "saddle": saddle_nll,
+          "chebtorch": exact_nll}
 COMPILED = {name: torch.compile(fn, dynamic=False) for name, fn in LOSSES.items()}
 # one compile per (N, dtype, grad mode) and loss: 12, over the default limit of 8
 for _k in ("recompile_limit", "cache_size_limit"):
@@ -133,7 +136,8 @@ def timed(fn, args, grad):
 
 def draws(n, p0, dtype, dev):
     torch.manual_seed(0)
-    y = chebtorch.Tweedie(torch.full((n,), MU, dtype=dtype, device=dev), PHI, p0).sample()
+    mu = torch.full((n,), MU, dtype=dtype, device=dev)
+    y = chebtorch.Tweedie(mu, PHI, p0).sample()
     p = torch.tensor(p0, dtype=dtype, device=dev, requires_grad=True)
     phi = torch.tensor(PHI, dtype=dtype, device=dev, requires_grad=True)
     mu = torch.full((n,), MU, dtype=dtype, device=dev, requires_grad=True)
@@ -142,9 +146,10 @@ def draws(n, p0, dtype, dev):
 
 def main():
     dev = torch.device("cuda")
-    print(f"{torch.cuda.get_device_name(dev)}, torch {torch.__version__}, {datetime.date.today()}")
-    print(f"ms per call, median of {REPS}, p = {P_TIMED}; +grad = values and d/dp, d/dphi, "
-          f"d/dmu (per element)")
+    print(f"{torch.cuda.get_device_name(dev)}, torch {torch.__version__}, "
+          f"{datetime.date.today()}")
+    print(f"ms per call, median of {REPS}, p = {P_TIMED}; +grad = values and "
+          f"d/dp, d/dphi, d/dmu (per element)")
     for dtype in (torch.float32, torch.float64):
         for n in NS:
             args = draws(n, P_TIMED, dtype, dev)
@@ -160,7 +165,8 @@ def main():
                 line = (f"  {name:<28}" + "".join(f"{v:9.2f}" for v in row[:2])
                         + f"{row[2]:11.2f}{row[3]:9.2f}")
                 if name == "chebtorch":
-                    line += f"   (compile {comp[2] / 1e3:.0f} s, {comp[3] / 1e3:.0f} s with grad)"
+                    line += (f"   (compile {comp[2] / 1e3:.0f} s, "
+                             f"{comp[3] / 1e3:.0f} s with grad)")
                 print(line)
     print("\nsaddle - exact log-density per observation, float64, N = 2^20")
     for p0 in PS:
@@ -168,9 +174,11 @@ def main():
         with torch.no_grad():
             d = saddle_ll(p, mu, phi, y) - chebtorch.tweedie_logpdf(p, mu, phi, y)
         pos = y > 0
-        print(f"  p = {p0}: zeros {(~pos).double().mean().item():.3f}, mean {d.mean().item():+.4f}, "
+        at_zero = d[~pos].abs().max().item() if (~pos).any() else 0.0
+        print(f"  p = {p0}: zeros {(~pos).double().mean().item():.3f}, "
+              f"mean {d.mean().item():+.4f}, "
               f"max |.| {d[pos].abs().max().item():.3g} (y > 0), "
-              f"{d[~pos].abs().max().item() if (~pos).any() else 0.0:.1g} at y = 0")
+              f"{at_zero:.1g} at y = 0")
 
 
 if __name__ == "__main__":

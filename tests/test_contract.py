@@ -35,7 +35,8 @@ def _imports(path):
                 absolute.add(node.module.split(".")[0])
             else:
                 assert node.level == 1, f"{path.name}: import from outside the package"
-                siblings |= {node.module} if node.module else {a.name for a in node.names}
+                names = [node.module] if node.module else [a.name for a in node.names]
+                siblings |= set(names)
     return absolute, siblings
 
 
@@ -87,17 +88,25 @@ def test_data_is_chebax_tables(family):
 
 
 COPY_CHECK = r"""
-import json, sys
+import json, math, sys
 sys.modules["chebtorch"] = None            # the copy must not need the library
 import torch
 from hostpkg.losses import tweedie_loss as m
 fx = json.load(open(sys.argv[1]))
+
+
+def t(v):
+    return torch.tensor(v, dtype=torch.float64)
+
+
 worst = 0.0
 for c in fx["log_wright_bessel0"]:
-    v = m.log_wright_bessel0(c["rho"], torch.tensor(c["z"], dtype=torch.float64)).item()
+    v = m.log_wright_bessel0(c["rho"], t(c["z"])).item()
+    assert math.isfinite(v), c             # max() below would drop a nan
     worst = max(worst, abs(v - c["value"]) / max(1.0, abs(c["value"])))
 for c in fx["tweedie_logpdf"]:
-    v = m.tweedie_logpdf(c["p"], c["mu"], c["phi"], torch.tensor(c["y"], dtype=torch.float64)).item()
+    v = m.tweedie_logpdf(c["p"], c["mu"], c["phi"], t(c["y"])).item()
+    assert math.isfinite(v), c
     worst = max(worst, abs(v - c["value"]) / max(1.0, abs(c["value"])))
 print(worst)
 """
