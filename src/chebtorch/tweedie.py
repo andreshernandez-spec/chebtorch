@@ -1,0 +1,238 @@
+# Copyright (c) 2026, Andres Hernandez
+# SPDX-License-Identifier: BSD-3-Clause (https://github.com/andreshernandez-spec/chebtorch)
+"""Tweedie log-density for power 1.05 <= p <= 1.95, and Wright's
+Phi(rho, 0; z) underneath it. From chebtorch; to use it elsewhere, copy it
+with _tweedie_data.py (its tables and their provenance) and cheb_common.py
+into one package directory. The three import only math, torch and each other.
+
+The compound Poisson-gamma Tweedie law with mean mu, dispersion phi and power
+p in (1, 2) puts mass exp(-lambda) at 0 and has, for y > 0,
+
+    f(y) = exp(-lambda - y/theta) W(rho, z) / y,  W = Phi(rho, 0; z),
+    lambda = mu^(2-p) / (phi (2-p)),  theta = phi (p-1) mu^(p-1),
+    rho = (2-p)/(p-1),  z = lambda (y/theta)^rho.
+
+Two regions in Z = y^(2-p) / (phi (2-p)(p-1)), split at Z1 = 12 + 2 (1+rho)^2:
+below it W is its own series, 64 terms summed in log space; above it the
+density is exactly the saddlepoint approximation
+-d(y, mu)/(2 phi) - ln(2 pi phi y^p)/2 (d the unit deviance) plus a tabulated
+correction T(ln rho, Z1/Z)/Z. chebax (chebax._src.recipes.tweedie_gen) has the
+measurements behind the split and the table.
+
+p is a scalar (python number or one-element tensor), uniform per call; mu,
+phi and y broadcast. A python p outside [1.05, 1.95] raises; a tensor p
+outside it, mu <= 0, phi <= 0 or y < 0 give nan. Differentiable in p, mu,
+phi and y (y only where y > 0), to second order. Computes in the inputs'
+float dtype (half precision through float32).
+
+Accuracy against mpmath at 40 digits, |err| / max(1, |ref|), worst cases in
+float64: ln W 7e-16, the density 8e-13, d/dp 6e-11, and 7e-12 for the
+gradients in ln mu, ln phi and ln y, all at p = 1.05, where lgamma(rho n)
+reaches ~4000 in the series. float32 arithmetic adds the same cancellation at
+its own eps: density 3e-4 and d/dp 3e-2 below p = 1.1, 1.6e-5 and 7e-4 below
+p = 1.3, 1.5e-6 and 4e-5 above.
+"""
+
+import math
+
+import torch
+from torch.distributions import constraints
+
+from .cheb_common import Tables, cheb, device_of, scalar, work_dtype
+from ._tweedie_data import A1, DATA, N_TERMS, P_HI, P_LO, RHO_MAX, RHO_MIN, S1, SHAPES, ZA
+
+__all__ = ["Tweedie", "log_wright_bessel0", "tweedie_logpdf"]
+
+_HALF_LOG_2PI = 0.5 * math.log(2 * math.pi)
+_tables = Tables(SHAPES, DATA)
+
+
+def _series(rho, u):
+    """ln S for S = sum_{n=1..N} exp(n u - lgamma(n+1) - lgamma(rho n)), and
+    its derivatives in u and rho, all from one pass: both are averages over
+    the same weights e_n / S."""
+    n = torch.arange(1, N_TERMS + 1, dtype=u.dtype, device=u.device)
+    c = torch.lgamma(n + 1) + torch.lgamma(rho * n)
+    g = n * torch.digamma(rho * n)               # -d/drho of term n's exponent
+    m = u - c[0]
+    for k in range(1, N_TERMS):
+        m = torch.maximum(m, (k + 1) * u - c[k])
+    s = su = sr = torch.zeros_like(u)
+    for k in range(N_TERMS):
+        e = torch.exp((k + 1) * u - c[k] - m)
+        s = s + e
+        su = su + (k + 1) * e
+        sr = sr + g[k] * e
+    return m + torch.log(s), su / s, -sr / s
+
+
+class _LogSeries(torch.autograd.Function):
+    """The series with its analytic backward. Autograd through the unrolled
+    sum would keep every term for the backward pass; this keeps two arrays.
+    With create_graph the derivatives are recomputed with tracked ops, so
+    second derivatives are exact too."""
+
+    @staticmethod
+    def forward(ctx, rho, u):
+        val, d_u, d_rho = _series(rho, u)
+        ctx.save_for_backward(rho, u, d_u, d_rho)
+        return val
+
+    @staticmethod
+    def backward(ctx, grad):
+        rho, u, d_u, d_rho = ctx.saved_tensors
+        if torch.is_grad_enabled():
+            _, d_u, d_rho = _series(rho, u)
+        return (grad * d_rho).sum(), grad * d_u
+
+
+def _split(r):
+    """Z1(rho) and the tail table's s-coefficients at this rho."""
+    z1 = ZA + S1 * (1 + r) ** 2
+    coefs = cheb(torch.log(r) / A1, _tables("TABLE_TAIL", r.dtype, r.device).T)
+    return z1, coefs
+
+
+def log_wright_bessel0(rho, z):
+    """ln Phi(rho, 0; z), Wright's generalized Bessel function at beta = 0.
+
+    rho is a scalar in [1/19, 19], uniform per call; z >= 0 any tensor.
+    -inf at z = 0 (Phi(rho, 0; 0) = 0), nan for z < 0 or rho outside the box.
+    """
+    work, out = work_dtype(z, rho)
+    dev = device_of(z, rho)
+    z = torch.as_tensor(z, dtype=work, device=dev)
+    rho = scalar(rho, work, dev, "log_wright_bessel0", "rho", RHO_MIN, RHO_MAX)
+    ok = (rho >= RHO_MIN) & (rho <= RHO_MAX)
+    r = torch.where(ok, rho, torch.ones_like(rho))
+    z1, coefs = _split(r)
+    pos = z > 0
+    zs = torch.where(pos, z, torch.ones_like(z))
+    lr = torch.log(r)
+    # pow keeps Z to an ulp where exp((lr + ln z)/(1+rho)) would carry
+    # eps |ln z|; z^e cannot overflow for e < 1
+    e = 1 / (1 + r)
+    big_z = (1 + r) / r * torch.pow(r, e) * torch.pow(zs, e)
+    inner = big_z <= z1
+    u1 = (1 + r) * torch.log(r * z1 / (1 + r)) - lr
+    w_in = _LogSeries.apply(r, torch.where(inner, torch.log(zs), u1))
+    zt = torch.where(inner, z1, big_z)
+    w_tail = (zt + 0.5 * torch.log(r * zt / (1 + r)) - _HALF_LOG_2PI
+              - 0.5 * torch.log1p(r) + cheb(2 * (z1 / zt) - 1, coefs) / zt)
+    res = torch.where(inner, w_in, w_tail)
+    res = torch.where(pos, res, torch.where(z == 0, -math.inf, math.nan))
+    return torch.where(ok, res, math.nan).to(out)
+
+
+def _half_deviance(a, mu, y):
+    """d(y, mu)/2 for power 2 - a. Near y = mu through expm1, which leaves a
+    cancellation of eps a |ln(y/mu)| relative to Z; pow elsewhere."""
+    x = torch.log(y) - torch.log(mu)
+    near = x.abs() < 1
+    xn = torch.where(near, x, torch.zeros_like(x))
+    r = y / mu
+    num = torch.where(near, torch.expm1(a * xn) - a * torch.expm1(xn),
+                      (torch.pow(r, a) - 1) - a * (r - 1))
+    return torch.pow(mu, a) * num / (a * (a - 1))
+
+
+def tweedie_logpdf(p, mu, phi, y):
+    """ln of the Tweedie density at y, power p in [1.05, 1.95].
+
+    At y = 0 this is ln P(Y = 0) = -lambda, the point mass; for y > 0 the
+    density. p is a scalar; mu, phi and y broadcast.
+    """
+    work, out = work_dtype(y, mu, phi, p)
+    dev = device_of(y, mu, phi, p)
+    # dtype= at creation: as_tensor(0.7).to(float64) would round 0.7 through
+    # float32 first
+    mu, phi, y = (torch.as_tensor(v, dtype=work, device=dev) for v in (mu, phi, y))
+    mu, phi, y = torch.broadcast_tensors(mu, phi, y)
+    p = scalar(p, work, dev, "tweedie_logpdf", "p", P_LO, P_HI)
+    # the box is checked on p as given: in float32, p = 1.05 rounds to
+    # 1.04999995, whose rho is just past RHO_MAX
+    ok = (p >= P_LO) & (p <= P_HI)
+    pp = torch.where(ok, p, torch.full_like(p, 1.5))
+    r = (2 - pp) / (pp - 1)
+    a = 2 - pp
+    valid = (mu > 0) & (phi > 0) & (y >= 0)
+    one = torch.ones_like(y)
+    mu_s = torch.where(valid, mu, one)
+    phi_s = torch.where(valid, phi, one)
+    pos = valid & (y > 0)
+    y_s = torch.where(pos, y, mu_s)
+    lam = torch.pow(mu_s, a) / (phi_s * a)
+    z1, coefs = _split(r)
+    big_z = torch.pow(y_s, a) / (phi_s * a * (pp - 1))
+    inner = big_z <= z1
+    # inner: the density as defined, ln W on u = ln z
+    lt = torch.log(phi_s * (pp - 1)) + (pp - 1) * torch.log(mu_s)
+    u = torch.log(lam) + r * (torch.log(y_s) - lt)
+    u1 = (1 + r) * torch.log(r * z1 / (1 + r)) - torch.log(r)
+    f_in = (-lam - torch.exp(torch.log(y_s) - lt) - torch.log(y_s)
+            + _LogSeries.apply(r, torch.where(inner, u, u1)))
+    # tail: saddlepoint form plus the tabulated correction
+    zt = torch.where(inner, z1, big_z)
+    f_tail = (-_half_deviance(a, mu_s, y_s) / phi_s
+              - 0.5 * (torch.log(phi_s) + pp * torch.log(y_s)) - _HALF_LOG_2PI
+              + cheb(2 * (z1 / zt) - 1, coefs) / zt)
+    res = torch.where(inner, f_in, f_tail)
+    res = torch.where(pos, res, -lam)
+    res = torch.where(valid, res, math.nan)
+    return torch.where(ok, res, math.nan).to(out)
+
+
+class Tweedie(torch.distributions.Distribution):
+    """Tweedie(mu, phi, power), the compound Poisson-gamma law.
+
+    Y is exactly 0 with probability exp(-mu^(2-p) / (phi (2-p))) and positive
+    and continuous otherwise. Mean mu, variance phi mu^power. mu and phi
+    broadcast; power is a scalar. Sampling draws the Poisson count and a gamma
+    total; it is not reparameterized (the count is discrete).
+    """
+
+    arg_constraints = {"mu": constraints.positive, "phi": constraints.positive}
+    support = constraints.nonnegative
+    has_rsample = False
+
+    def __init__(self, mu, phi, power, validate_args=None):
+        work, _ = work_dtype(mu, phi, power)
+        dev = device_of(mu, phi, power)
+        mu, phi = (torch.as_tensor(v, dtype=work, device=dev) for v in (mu, phi))
+        self.mu, self.phi = torch.broadcast_tensors(mu, phi)
+        self.power = scalar(power, work, dev, "Tweedie", "power", P_LO, P_HI)
+        super().__init__(self.mu.shape, validate_args=validate_args)
+
+    def expand(self, batch_shape, _instance=None):
+        new = self._get_checked_instance(Tweedie, _instance)
+        batch_shape = torch.Size(batch_shape)
+        new.mu = self.mu.expand(batch_shape)
+        new.phi = self.phi.expand(batch_shape)
+        new.power = self.power
+        super(Tweedie, new).__init__(batch_shape, validate_args=False)
+        new._validate_args = self._validate_args
+        return new
+
+    @property
+    def mean(self):
+        return self.mu
+
+    @property
+    def variance(self):
+        return self.phi * self.mu ** self.power
+
+    def log_prob(self, value):
+        if self._validate_args:
+            self._validate_sample(value)
+        return tweedie_logpdf(self.power, self.mu, self.phi, value)
+
+    def sample(self, sample_shape=torch.Size()):
+        shape = self._extended_shape(sample_shape)
+        with torch.no_grad():
+            p = self.power
+            mu, phi = self.mu.expand(shape), self.phi.expand(shape)
+            n = torch.poisson(mu ** (2 - p) / (phi * (2 - p)))
+            # the gamma total of n claims of shape (2-p)/(p-1); n = 0 is Y = 0
+            conc = n.clamp(min=1) * (2 - p) / (p - 1)
+            total = torch.distributions.Gamma(conc, torch.ones_like(conc)).sample()
+            return torch.where(n > 0, total * phi * (p - 1) * mu ** (p - 1), 0.0)

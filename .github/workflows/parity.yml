@@ -1,0 +1,26 @@
+name: parity
+
+# chebtorch against chebax main: the tables must be chebax's to the bit and the
+# values and gradients must agree to within both accuracy floors. Weekly, so a
+# chebax change that needs a re-export shows up without a chebtorch push.
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e ".[test]" "chebax @ git+https://github.com/andreshernandez-spec/chebax@main"
+      - name: Tables and values against chebax
+        env:
+          JAX_PLATFORMS: cpu
+        run: python -m pytest -q tests/test_contract.py tests/test_parity.py

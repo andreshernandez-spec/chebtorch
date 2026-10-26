@@ -1,0 +1,281 @@
+"""Tweedie densities and ln Phi(rho, 0; z) against mpmath fixtures.
+
+Fixtures (tests/fixtures/tweedie.json) are mpmath at 40 digits, written by
+tools/export.py --fixtures: a grid over the box, the region just below the
+split at small p where the errors peak, and random points. Both functions are
+logarithms, so the error is |err| / max(1, |ref|): absolute in the log where it
+is small, relative where it is large. Gradients in mu, phi and y are taken in
+their logarithms (x df/dx): df/dphi is 1/phi times a cancellation that does
+not shrink with phi, so a plain metric grows as 1/phi near a zero of it.
+
+float64 is checked against mpmath. float32 is checked against float64 at the
+same float32 inputs, which separates the arithmetic from the rounding of the
+inputs (at p = 1.05 df/dp is in the thousands, so rounding p alone moves the
+density by ~1e-4).
+
+Measured worst (2026-10-26, torch 2.13 on CPU and an RTX 3080 Laptop; torch
+2.4.1, the CI floor, gives the same on CPU; the bars are about 4x):
+
+float64   ln W 7.3e-16, d/dz 1.0e-14, d/drho 1.2e-14; density 7.6e-13,
+          d/dp 5.8e-11, d/dln mu 8.7e-14, d/dln phi 6.9e-12, d/dln y 6.0e-12.
+          All at p = 1.05. Below the split lgamma(rho n) reaches ~4000 in the
+          series and eps |lgamma| survives into an O(1) log-density (d/dp also
+          carries drho/dp = -400 there); d/dln mu is worst in the tail with y
+          near mu and mu/phi ~ 2000, where the deviance cancels.
+float32   ln W 5.6e-7, d/dz 1.7e-6, d/drho 4.4e-6 (z within float32's range),
+          and by p, the same cancellation at float32's eps:
+                      density  d/dp     d/dln mu  d/dln phi  d/dln y
+          p < 1.1     3.1e-4   2.9e-2   1.9e-4    3.8e-3     2.1e-3
+          p < 1.3     1.6e-5   7.0e-4   2.5e-6    5.9e-5     3.1e-5
+          p >= 1.3    1.5e-6   4.2e-5   1.9e-6    6.8e-6     5.7e-6
+"""
+
+import json
+import math
+import pathlib
+
+import pytest
+import torch
+
+from chebtorch.cheb_common import cheb
+from chebtorch.tweedie import (A1, P_HI, P_LO, Tweedie, _split, log_wright_bessel0,
+                               tweedie_logpdf)
+
+FX = json.loads((pathlib.Path(__file__).parent / "fixtures" / "tweedie.json").read_text())
+DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+W64 = {"w": 3e-15, "dz": 4e-14, "drho": 5e-14}
+W32 = {"w": 2.5e-6, "dz": 7e-6, "drho": 1.8e-5}
+# (density, (d/dp, d/dln mu, d/dln phi, d/dln y)); float32 by band of p
+F64 = (3e-12, (2.4e-10, 3.5e-13, 2.8e-11, 2.4e-11))
+F32 = ((1.1, 1.2e-3, (1.2e-1, 8e-4, 1.5e-2, 8.5e-3)),
+       (1.3, 6.5e-5, (3e-3, 1e-5, 2.4e-4, 1.2e-4)),
+       (2.0, 6e-6, (1.7e-4, 8e-6, 2.7e-5, 2.3e-5)))
+ARGS = ("p", "mu", "phi", "y")
+
+
+def _rel(got, ref):
+    return abs(got - ref) / max(1.0, abs(ref))
+
+
+def _eval(fn, xs, dtype, device):
+    """fn at xs in dtype: the value and the gradient in each argument."""
+    args = [torch.tensor(x, dtype=dtype, device=device, requires_grad=True) for x in xs]
+    v = fn(*args)
+    v.backward()
+    return v.item(), [a.grad.item() for a in args]
+
+
+def _to32(name, x):
+    """x rounded to float32; p to the nearest float32 inside the box, since
+    1.05 and 1.95 round outward."""
+    t = torch.tensor(x, dtype=torch.float32)
+    if name == "p" and not P_LO <= t.item() <= P_HI:
+        t = torch.nextafter(t, torch.tensor(1.5))
+    return t.item()
+
+
+def _grad_errors(xs, got, ref):
+    # d/dp as is, mu, phi and y in their logs; d/dy has no reference at y = 0
+    return [0.0 if r is None else _rel(g, r) if i == 0 else _rel(xs[i] * g, xs[i] * r)
+            for i, (g, r) in enumerate(zip(got, ref))]
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_log_wright_bessel0_float64(device):
+    worst = dict.fromkeys(W64, 0.0)
+    for c in FX["log_wright_bessel0"]:
+        v, (gr, gz) = _eval(log_wright_bessel0, (c["rho"], c["z"]), torch.float64, device)
+        worst["w"] = max(worst["w"], _rel(v, c["value"]))
+        worst["dz"] = max(worst["dz"], abs(gz - c["dz"]) / abs(c["dz"]))
+        worst["drho"] = max(worst["drho"], _rel(gr, c["drho"]))
+    for k, v in worst.items():
+        assert v <= W64[k], (k, v)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_log_wright_bessel0_float32(device):
+    worst = dict.fromkeys(W32, 0.0)
+    for c in FX["log_wright_bessel0"]:
+        if not 1e-30 <= c["z"] <= 1e30:
+            continue
+        xs = (_to32("rho", c["rho"]), _to32("z", c["z"]))
+        v, (gr, gz) = _eval(log_wright_bessel0, xs, torch.float32, device)
+        r, (rr, rz) = _eval(log_wright_bessel0, xs, torch.float64, device)
+        worst["w"] = max(worst["w"], _rel(v, r))
+        worst["dz"] = max(worst["dz"], abs(gz - rz) / abs(rz))
+        worst["drho"] = max(worst["drho"], _rel(gr, rr))
+    for k, v in worst.items():
+        assert v <= W32[k], (k, v)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_tweedie_logpdf_float64(device):
+    worst_f, worst_g = 0.0, [0.0] * 4
+    for c in FX["tweedie_logpdf"]:
+        xs = [c[k] for k in ARGS]
+        v, g = _eval(tweedie_logpdf, xs, torch.float64, device)
+        worst_f = max(worst_f, _rel(v, c["value"]))
+        if "grad" in c:
+            for i, e in enumerate(_grad_errors(xs, g, c["grad"])):
+                worst_g[i] = max(worst_g[i], e)
+    assert worst_f <= F64[0], worst_f
+    for got, bar, name in zip(worst_g, F64[1], ARGS):
+        assert got <= bar, (name, got)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_tweedie_logpdf_float32(device):
+    for lo, (hi, bar_f, bar_g) in zip((1.0, 1.1, 1.3), F32):
+        worst_f, worst_g = 0.0, [0.0] * 4
+        for c in FX["tweedie_logpdf"]:
+            if not lo <= c["p"] < hi:
+                continue
+            xs = [_to32(k, c[k]) for k in ARGS]
+            v, g = _eval(tweedie_logpdf, xs, torch.float32, device)
+            r, gr = _eval(tweedie_logpdf, xs, torch.float64, device)
+            worst_f = max(worst_f, _rel(v, r))
+            for i, e in enumerate(_grad_errors(xs, g, gr)):
+                worst_g[i] = max(worst_g[i], e)
+        assert worst_f <= bar_f, (lo, worst_f)
+        for got, bar, name in zip(worst_g, bar_g, ARGS):
+            assert got <= bar, (lo, name, got)
+
+
+def test_table_limit_is_c1():
+    # T -> c1(rho) = -(2 rho + 1)(rho + 2)/(24 rho) as Z -> inf: the end no
+    # fixture reaches, in closed form
+    for t in torch.linspace(-1, 1, 41, dtype=torch.float64):
+        r = torch.exp(t * A1)
+        _, coefs = _split(r)
+        c1 = -(2 * r + 1) * (r + 2) / (24 * r)
+        assert abs(cheb(torch.tensor(-1.0, dtype=torch.float64), coefs) - c1) <= 4e-15
+
+
+def test_huge_arguments_follow_the_saddle():
+    for rho, z in ((1 / 19, 1e300), (1.0, 1e300), (19.0, 1e300), (0.3, 1e150)):
+        got = log_wright_bessel0(rho, torch.tensor(z, dtype=torch.float64)).item()
+        e = 1 / (1 + rho)
+        t0 = rho ** e * z ** e                     # pow, as the implementation does
+        big_z = (1 + rho) * t0 / rho
+        lead = big_z + 0.5 * math.log(t0) - 0.5 * math.log(2 * math.pi * (1 + rho))
+        assert math.isfinite(got) and abs(got - lead) / lead <= 1.5e-15, (rho, got, lead)
+
+
+def test_edges_and_invalid_arguments():
+    f64 = torch.float64
+    assert log_wright_bessel0(1.0, torch.tensor(0.0, dtype=f64)).item() == -math.inf
+    assert math.isnan(log_wright_bessel0(1.0, torch.tensor(-1.0, dtype=f64)).item())
+    for rho in (1 / 19 * 0.999, 19.01):
+        assert math.isnan(log_wright_bessel0(torch.tensor(rho, dtype=f64), 2.0).item())
+        with pytest.raises(ValueError, match="covers rho"):
+            log_wright_bessel0(rho, torch.tensor(2.0, dtype=f64))
+    p, mu, phi = 1.4, 2.0, 0.7
+    lam = mu ** (2 - p) / (phi * (2 - p))
+    assert tweedie_logpdf(p, mu, phi, torch.tensor(0.0, dtype=f64)).item() == pytest.approx(-lam, rel=1e-15)
+    for bad in ((p, 0.0, phi, 1.0), (p, mu, -1.0, 1.0), (p, mu, phi, -0.5)):
+        assert math.isnan(tweedie_logpdf(bad[0], *(torch.tensor(v, dtype=f64) for v in bad[1:])).item())
+    for pt in (1.0499, 1.9501):
+        assert math.isnan(tweedie_logpdf(torch.tensor(pt, dtype=f64), mu, phi, torch.tensor(1.0, dtype=f64)).item())
+        with pytest.raises(ValueError, match="covers p"):
+            tweedie_logpdf(pt, mu, phi, torch.tensor(1.0, dtype=f64))
+    with pytest.raises(ValueError, match="uniform per call"):
+        tweedie_logpdf(torch.tensor([1.3, 1.6], dtype=f64), mu, phi, torch.tensor(1.0, dtype=f64))
+    # a one-element tensor is the scalar it holds; both box edges are in it
+    one = tweedie_logpdf(torch.tensor([1.6], dtype=f64), mu, phi, torch.tensor(1.0, dtype=f64))
+    assert one.item() == tweedie_logpdf(1.6, mu, phi, torch.tensor(1.0, dtype=f64)).item()
+    for edge in (P_LO, P_HI):
+        for dt in (torch.float64, torch.float32):
+            assert math.isfinite(tweedie_logpdf(edge, mu, phi, torch.tensor(1.0, dtype=dt)).item())
+
+
+def test_broadcasting_and_dtypes():
+    mu = torch.tensor([0.5, 1.0, 2.0, 4.0], dtype=torch.float64)
+    y = torch.tensor([[0.0], [0.3], [9.0]], dtype=torch.float64)
+    got = tweedie_logpdf(1.6, mu, 0.8, y)
+    assert got.shape == (3, 4)
+    for i in range(3):
+        for j in range(4):
+            assert got[i, j].item() == tweedie_logpdf(1.6, mu[j], 0.8, y[i, 0]).item()
+    half = tweedie_logpdf(1.6, mu.half(), 0.8, y.half())
+    assert half.dtype == torch.float16
+    assert torch.allclose(half.double(), got, rtol=2e-3, atol=2e-3)
+
+
+def test_mixed_batch_gradients_are_finite():
+    y = torch.tensor([0.0, 1e-8, 0.4, 3.0, 40.0], dtype=torch.float64)
+    p = torch.tensor(1.3, dtype=torch.float64, requires_grad=True)
+    mu = torch.full_like(y, 2.0, requires_grad=True)
+    phi = torch.tensor(0.9, dtype=torch.float64, requires_grad=True)
+    tweedie_logpdf(p, mu, phi, y).sum().backward()
+    assert all(torch.isfinite(g).all() for g in (p.grad, mu.grad, phi.grad))
+    # the y = 0 lane is -lambda: d/dmu = -mu^(1-p)/phi exactly
+    assert mu.grad[0].item() == pytest.approx(-(2.0 ** (1 - 1.3)) / 0.9, rel=1e-14)
+
+
+def test_second_derivatives():
+    # with create_graph the series' derivatives are recomputed with tracked
+    # ops; check d2/dp2 and d2/dp dmu against central differences of the
+    # (exact) first derivative
+    y = torch.tensor([0.0, 0.05, 1.3, 4.0, 30.0], dtype=torch.float64)
+
+    def grad_p(p, mu):
+        p = torch.tensor(p, dtype=torch.float64, requires_grad=True)
+        mu = torch.tensor(mu, dtype=torch.float64, requires_grad=True)
+        g = torch.autograd.grad(tweedie_logpdf(p, mu, 0.8, y).sum(), (p, mu), create_graph=True)[0]
+        return g, p, mu
+
+    for p0 in (1.08, 1.45, 1.9):
+        g, p, mu = grad_p(p0, 2.0)
+        d2p, d2pm = torch.autograd.grad(g, (p, mu))
+        h = 1e-5
+        fd_p = (grad_p(p0 + h, 2.0)[0].item() - grad_p(p0 - h, 2.0)[0].item()) / (2 * h)
+        fd_pm = (grad_p(p0, 2.0 + h)[0].item() - grad_p(p0, 2.0 - h)[0].item()) / (2 * h)
+        assert d2p.item() == pytest.approx(fd_p, rel=1e-6), p0
+        assert d2pm.item() == pytest.approx(fd_pm, rel=1e-6), p0
+
+
+def test_normalizes_with_its_moments():
+    # P(0) + int f = 1, E Y = mu, Var Y = phi mu^p: the whole density at once,
+    # integrated in v = ln y (near 0 the density is ~ y^(rho - 1))
+    integrate = pytest.importorskip("scipy.integrate")
+    for p, mu, phi in ((1.1, 1.0, 1.0), (1.5, 2.0, 0.5), (1.9, 0.5, 2.0), (1.3, 5.0, 0.2)):
+        def g(v, k):
+            y = torch.tensor(math.exp(v), dtype=torch.float64)
+            return math.exp(tweedie_logpdf(p, mu, phi, y).item() + (k + 1) * v)
+        p0 = math.exp(tweedie_logpdf(p, mu, phi, torch.tensor(0.0, dtype=torch.float64)).item())
+        vhi = math.log(mu + 60 * math.sqrt(phi * mu ** p))
+        m = [integrate.quad(g, -745.0, vhi, args=(k,), points=[math.log(mu)],
+                            epsabs=1e-14, epsrel=1e-13, limit=400)[0] for k in (0, 1, 2)]
+        assert abs(p0 + m[0] - 1) <= 1e-9, (p, m)
+        assert abs(m[1] - mu) / mu <= 1e-9, (p, m)
+        assert abs(m[2] - m[1] ** 2 - phi * mu ** p) / (phi * mu ** p) <= 1e-8, (p, m)
+
+
+def test_distribution():
+    mu, phi, p = 2.0, 0.8, 1.4
+    d = Tweedie(torch.tensor(mu, dtype=torch.float64), phi, p)
+    y = torch.tensor([0.0, 0.3, 2.0, 7.5], dtype=torch.float64)
+    assert torch.equal(d.log_prob(y), tweedie_logpdf(p, mu, phi, y))
+    torch.manual_seed(0)
+    s = d.sample((200_000,))
+    var = phi * mu ** p
+    p0 = math.exp(-mu ** (2 - p) / (phi * (2 - p)))
+    n = s.numel()
+    assert abs(s.mean().item() - mu) <= 5 * math.sqrt(var / n)
+    assert abs(s.var().item() - var) / var <= 0.02
+    assert abs((s == 0).double().mean().item() - p0) <= 5 * math.sqrt(p0 * (1 - p0) / n)
+    assert (s >= 0).all()
+    assert d.mean.item() == mu and d.variance.item() == pytest.approx(var)
+    e = d.expand((3, 2))
+    assert e.batch_shape == (3, 2) and e.sample().shape == (3, 2)
+    with pytest.raises(ValueError, match="covers power"):
+        Tweedie(1.0, 1.0, 1.02)
+    with pytest.raises(ValueError):
+        Tweedie(1.0, 1.0, 1.5, validate_args=True).log_prob(torch.tensor(-1.0))
+
+
+def test_torch_compile_matches_eager():
+    y = torch.tensor([0.0, 0.05, 1.3, 4.0, 300.0], dtype=torch.float64)
+    eager = tweedie_logpdf(1.37, 2.0, 0.8, y)
+    compiled = torch.compile(tweedie_logpdf)(1.37, 2.0, 0.8, y)
+    torch.testing.assert_close(compiled, eager, rtol=0, atol=1e-14)
