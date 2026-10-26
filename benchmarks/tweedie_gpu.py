@@ -17,23 +17,31 @@ each eager and under torch.compile (static shapes, one compile per N):
   for y > 0, and the exact -lambda at y = 0.
 - chebtorch: tweedie_logpdf, the exact density.
 
-Also: chebtorch's compile time (first call less a steady one), and how far
-the saddle is from the exact density on N = 2^20 draws at p = 1.2, 1.5, 1.8
-(float64, per observation).
+Also: chebtorch's compile time (first call less a steady one), the CUDA
+kernels one eager chebtorch call launches and the peak memory it allocates,
+and how far the saddle is from the exact density on N = 2^20 draws at
+p = 1.2, 1.5, 1.8 (float64, per observation).
 
 FINDINGS (2026-10-26, RTX 3080 Laptop, torch 2.13; results/tweedie_gpu.txt)
 -----------------------------------------------------------------------------
-- Eager, chebtorch costs per call, not per element: float32 ~10 ms for values
-  and 20-24 ms with gradients from N = 2^12 to 2^16, against 0.1 / 1 ms for the
-  kernel loss. One call launches 1279 CUDA kernels, 2311 with gradients (the
-  64-term series and both Chebyshev sums unrolled; counted with
-  torch.profiler at N = 2^12). At 2^20 it is 28 / 40 ms.
-- Compiled, float32: 0.3-0.5 ms for values and 1.3-1.7 ms with gradients up to
-  N = 2^16 (kernel loss 0.07-0.09 / 0.29-0.46 ms), 5.0 / 8.6 ms at 2^20. Cold
-  compiles take 23-35 s for values and 60-124 s with gradients, per shape and
-  dtype. Sub-millisecond numbers move by ~30% between runs.
-- float64 with gradients at 2^20 is no faster compiled (90 ms) than eager
-  (88 ms); this part runs float64 at 1:64.
+- Eager, chebtorch still costs mostly per call: float32 3.4 ms for values and
+  12 ms with gradients at N = 2^12, 5.4 / 14 ms at 2^16, against 0.1 /
+  0.7-0.9 ms for the kernel loss; 18 / 29 ms at 2^20. One call launches 433
+  CUDA kernels, 1343 with gradients (661 / 1571 at 2^20, where the series
+  takes its lanes 2^16 at a time).
+- Peak memory of an eager call is under 80 MB up to 2^16; at 2^20 it is 107
+  MB for values and 292 MB with gradients in float32, 211 / 580 MB in
+  float64.
+- Compiled, float32: 0.1-0.35 ms for values and 0.7-1.1 ms with gradients up
+  to N = 2^16 (kernel loss 0.06-0.09 / 0.28-0.34 ms), 1.1 / 3.3 ms at 2^20.
+  Cold compiles take 11-20 s for values and 38-64 s with gradients, per shape
+  and dtype. Sub-millisecond numbers move by ~30% between runs.
+- Compiled float64 is slow where the series is a single pass over the lanes:
+  13 ms for values at 2^16, against 5.3 eager. Profiling shows inductor
+  fusing the whole density into the series' reduction over the 64 terms; from
+  2^17 the passes keep it out (27 ms at 2^20, for 16 times the lanes). With
+  gradients at 2^20, compiled float64 is no faster than eager (71 against
+  74 ms). This GPU runs float64 at 1:64.
 - The saddlepoint log-density is above the exact one by 0.08 to 0.11 per
   observation on average (p = 1.2, 1.5, 1.8). Its errors above 1 are all at
   small y (up to 9.4, at y <= 0.29), 0.07% to 0.9% of the draws; at y = 0 it
@@ -50,7 +58,7 @@ per observation, and what it does to a fitted p is a separate question.
 Times are medians of single synchronized calls, so they include launch
 overhead, which is most of the eager chebtorch time.
 
-Run:  python benchmarks/tweedie_gpu.py   (~10 min, most of it compiling)
+Run:  python benchmarks/tweedie_gpu.py   (~8 min, most of it compiling)
 """
 
 import atexit
@@ -70,6 +78,7 @@ os.environ["TORCHINDUCTOR_CACHE_DIR"] = _CACHE
 os.environ["TRITON_CACHE_DIR"] = os.path.join(_CACHE, "triton")
 
 import torch  # noqa: E402
+from torch.profiler import ProfilerActivity, profile  # noqa: E402
 
 import chebtorch  # noqa: E402
 
@@ -134,6 +143,28 @@ def timed(fn, args, grad):
     return out[0], statistics.median(out[1:])
 
 
+def kernels(fn, args, grad):
+    """CUDA kernels one call launches, copies and memsets not counted."""
+    call(fn, args, grad)
+    torch.cuda.synchronize()
+    with profile(activities=[ProfilerActivity.CUDA]) as prof:
+        call(fn, args, grad)
+        torch.cuda.synchronize()
+    return sum(e.device_type == torch.autograd.DeviceType.CUDA
+               and not e.name.startswith(("Memcpy", "Memset")) for e in prof.events())
+
+
+def peak_mb(fn, args, grad):
+    """GPU memory one call allocates at its peak, beyond what it starts with."""
+    call(fn, args, grad)
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    base = torch.cuda.memory_allocated()
+    call(fn, args, grad)
+    torch.cuda.synchronize()
+    return (torch.cuda.max_memory_allocated() - base) / 2 ** 20
+
+
 def draws(n, p0, dtype, dev):
     torch.manual_seed(0)
     mu = torch.full((n,), MU, dtype=dtype, device=dev)
@@ -168,6 +199,11 @@ def main():
                     line += (f"   (compile {comp[2] / 1e3:.0f} s, "
                              f"{comp[3] / 1e3:.0f} s with grad)")
                 print(line)
+            fn = LOSSES["chebtorch"]
+            k = [kernels(fn, args, grad) for grad in (False, True)]
+            m = [peak_mb(fn, args, grad) for grad in (False, True)]
+            print(f"  {'':28}eager: {k[0]} / {k[1]} CUDA kernels, "
+                  f"peak {m[0]:.1f} / {m[1]:.1f} MB")
     print("\nsaddle - exact log-density per observation, float64, N = 2^20")
     for p0 in PS:
         p, mu, phi, y = draws(NS[-1], p0, torch.float64, dev)
