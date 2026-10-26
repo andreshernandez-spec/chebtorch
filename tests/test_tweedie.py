@@ -17,7 +17,7 @@ Measured worst (2026-10-26, torch 2.13 on CPU and an RTX 3080 Laptop; torch
 2.4.1, the CI floor, gives the same on CPU; the bars are about 4x):
 
 float64   ln W 7.3e-16, d/dz 1.0e-14, d/drho 1.2e-14; density 7.6e-13,
-          d/dp 5.8e-11, d/dln mu 8.7e-14, d/dln phi 6.9e-12, d/dln y 6.0e-12.
+          d/dp 4.3e-11, d/dln mu 8.7e-14, d/dln phi 7.0e-12, d/dln y 5.8e-12.
           All at p = 1.05. Below the split lgamma(rho n) reaches ~4000 in the
           series and eps |lgamma| survives into an O(1) log-density (d/dp also
           carries drho/dp = -400 there); d/dln mu is worst in the tail with y
@@ -25,9 +25,9 @@ float64   ln W 7.3e-16, d/dz 1.0e-14, d/drho 1.2e-14; density 7.6e-13,
 float32   ln W 5.6e-7, d/dz 1.7e-6, d/drho 4.4e-6 (z within float32's range),
           and by p, the same cancellation at float32's eps:
                       density  d/dp     d/dln mu  d/dln phi  d/dln y
-          p < 1.1     3.1e-4   2.9e-2   1.9e-4    3.8e-3     2.1e-3
-          p < 1.3     1.6e-5   7.0e-4   2.5e-6    5.9e-5     3.1e-5
-          p >= 1.3    1.5e-6   4.2e-5   1.9e-6    6.8e-6     5.7e-6
+          p < 1.1     3.1e-4   2.0e-2   1.9e-4    3.8e-3     2.0e-3
+          p < 1.3     1.6e-5   4.5e-4   2.5e-6    5.2e-5     3.5e-5
+          p >= 1.3    1.5e-6   2.1e-5   1.9e-6    4.3e-6     4.4e-6
 """
 
 import json
@@ -47,10 +47,10 @@ DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 BAR_W64 = {"w": 3e-15, "dz": 4e-14, "drho": 5e-14}
 BAR_W32 = {"w": 2.5e-6, "dz": 7e-6, "drho": 1.8e-5}
 # (density, (d/dp, d/dln mu, d/dln phi, d/dln y)); float32 by band of p
-BAR_F64 = (3e-12, (2.4e-10, 3.5e-13, 2.8e-11, 2.4e-11))
-BAR_F32 = ((1.1, 1.2e-3, (1.2e-1, 8e-4, 1.5e-2, 8.5e-3)),
-           (1.3, 6.5e-5, (3e-3, 1e-5, 2.4e-4, 1.2e-4)),
-           (2.0, 6e-6, (1.7e-4, 8e-6, 2.7e-5, 2.3e-5)))
+BAR_F64 = (3e-12, (1.7e-10, 3.5e-13, 2.8e-11, 2.4e-11))
+BAR_F32 = ((1.1, 1.2e-3, (8e-2, 8e-4, 1.5e-2, 8.5e-3)),
+           (1.3, 6.5e-5, (1.8e-3, 1e-5, 2.4e-4, 1.2e-4)),
+           (2.0, 6e-6, (8.5e-5, 8e-6, 1.7e-5, 1.8e-5)))
 ARGS = ("p", "mu", "phi", "y")
 
 

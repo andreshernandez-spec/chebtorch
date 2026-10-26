@@ -25,11 +25,11 @@ box. The fixtures straddle the seam at Z1 (1 -+ 1e-9). chebax
 the table.
 
 Accuracy against mpmath at 40 digits, |err| / max(1, |ref|), worst cases in
-float64: ln W 7e-16, the density 8e-13, d/dp 6e-11, and 7e-12 for the
+float64: ln W 7e-16, the density 8e-13, d/dp 4e-11, and 7e-12 for the
 gradients in ln mu, ln phi and ln y, all at p = 1.05, where lgamma(rho n)
 reaches ~4000 in the series. float32 arithmetic adds the same cancellation at
-its own eps: density 3e-4 and d/dp 3e-2 below p = 1.1, 1.6e-5 and 7e-4 below
-p = 1.3, 1.5e-6 and 4e-5 above.
+its own eps: density 3e-4 and d/dp 2e-2 below p = 1.1, 1.6e-5 and 5e-4 below
+p = 1.3, 1.5e-6 and 2e-5 above.
 """
 
 import math
@@ -44,26 +44,30 @@ from ._tweedie_data import (A1, DATA, N_TERMS, P_HI, P_LO, RHO_MAX, RHO_MIN, S1,
 __all__ = ["Tweedie", "log_wright_bessel0", "tweedie_logpdf"]
 
 _HALF_LOG_2PI = 0.5 * math.log(2 * math.pi)
+_LANES = 1 << 16
 _tables = Tables(SHAPES, DATA)
 
 
 def _series(rho, u):
     """ln S for S = sum_{n=1..N} exp(n u - lgamma(n+1) - lgamma(rho n)), and
     its derivatives in u and rho, all from one pass: both are averages over
-    the same weights e_n / S."""
+    the same weights e_n / S. The terms are a (lanes, N) tensor, so a call
+    is a few kernels rather than a few per term. Lanes go _LANES at a time,
+    which caps the temporaries at two such tensors (64 MB in float64)."""
     n = torch.arange(1, N_TERMS + 1, dtype=u.dtype, device=u.device)
     c = torch.lgamma(n + 1) + torch.lgamma(rho * n)
     g = n * torch.digamma(rho * n)               # -d/drho of term n's exponent
-    m = u - c[0]
-    for k in range(1, N_TERMS):
-        m = torch.maximum(m, (k + 1) * u - c[k])
-    s = su = sr = torch.zeros_like(u)
-    for k in range(N_TERMS):
-        e = torch.exp((k + 1) * u - c[k] - m)
-        s = s + e
-        su = su + (k + 1) * e
-        sr = sr + g[k] * e
-    return m + torch.log(s), su / s, -sr / s
+    out = []
+    for uc in u.reshape(-1, 1).split(_LANES):
+        t = n * uc - c
+        # the shift cancels in all three results, so it needs no derivative
+        m = t.detach().amax(-1, keepdim=True)
+        # in place: no backward needs t itself
+        e = t.sub_(m).exp_()
+        s = e.sum(-1)
+        # sums, not matmuls: under TF32 a float32 matmul rounds to 10 bits
+        out.append((m[:, 0] + torch.log(s), (e * n).sum(-1) / s, -(e * g).sum(-1) / s))
+    return tuple(torch.cat(x).reshape(u.shape) for x in zip(*out))
 
 
 class _LogSeries(torch.autograd.Function):

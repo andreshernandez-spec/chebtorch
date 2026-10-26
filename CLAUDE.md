@@ -33,7 +33,7 @@ in chebax and reaches chebtorch only through `tools/export.py`.
 
 ```bash
 python -m pip install -e ".[test]" --no-build-isolation   # into the open-source env
-python -m pytest -q                       # ~2.5 min; GPU tests run when CUDA is present,
+python -m pytest -q                       # ~1.5 min; GPU tests run when CUDA is present,
                                           #  parity tests when chebax imports
 python tools/export.py                    # every _<family>_data.py, from the installed chebax
 python tools/export.py --fixtures         # also the mpmath fixtures (~40 s)

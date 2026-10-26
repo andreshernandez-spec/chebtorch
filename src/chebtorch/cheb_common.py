@@ -20,10 +20,11 @@ import torch
 def cheb(x, c):
     """sum_k c[k] T_k(x) by Clenshaw. c's first axis is the degree, so a
     (degree, n) table gives n series at once."""
+    x2 = 2 * x                   # exact, so the same bits as 2 * x * b1 per step
     b1 = torch.zeros_like(x * c[0])
     b2 = torch.zeros_like(b1)
     for k in range(c.shape[0] - 1, 0, -1):
-        b1, b2 = 2 * x * b1 - b2 + c[k], b1
+        b1, b2 = x2 * b1 - b2 + c[k], b1
     return x * b1 - b2 + c[0]
 
 
