@@ -163,17 +163,17 @@ DATA = {"TABLE_TAIL": (0.98969..., ...)}
   memory), and the inverse CDFs (implicit function theorem; never differentiate the
   fixed-iteration solver).
 - Measured (`benchmarks/tweedie_gpu.py`, 2026-10-28, RTX 3080 Laptop, float32):
-  eager is 3.8-5.7 ms for values and 11-21 ms with gradients up to N = 2^16
-  with a tensor p (510 and 1466 CUDA kernels per call), and 2.6-2.7 / 5.1-5.8
-  ms with a python p, whose terms are kept (279 and 552 kernels, gradients in
-  mu and phi), against 0.1 / 0.8-1.4 ms for neuralforecast's kernel-only
-  loss; compiled, 0.14-0.38 / 0.35-1.6 ms, after 7-65 s of cold compile per
-  shape. A training loop that does not compile pays the eager cost every
-  step. What to shrink next: the tail's 31-step Chebyshev sum over the lanes
-  and the deviance's 26-step series; with a tensor p, also the 63-step sum
-  for the tail's coefficients and its backward. Compiled float64 is slow
-  while the series is one pass over the lanes (8 ms at 2^16 against 6.6
-  eager): inductor fuses the whole density into its reduction.
+  eager is 5.0-6.1 ms for values and 16-19 ms with gradients up to N = 2^16
+  with a tensor p (510 and 1466 CUDA kernels per call), 2.1-4.5 / 5.0-9.3 ms
+  with a python p, whose terms are kept (279 and 552 kernels, gradients in mu
+  and phi), and 0.77-0.99 / 1.35-1.86 ms for `tweedie_logpdf_fixed_p` (81 and
+  110 kernels), against 0.24-0.42 / 1.23-2.36 ms for the saddlepoint and 0.1
+  / 0.7-1.2 ms for neuralforecast's kernel-only loss. Compiled, 0.11-0.29 /
+  0.37-1.7 ms after 5-66 s of cold compile per shape. A training loop that
+  does not compile pays the eager cost every step; below the saddlepoint's
+  eager cost, the remaining route is one fused kernel. Compiled float64 is
+  slow while the series is one pass over the lanes (6-8 ms at 2^16 against
+  3-7 eager): inductor fuses the whole density into its reduction.
   `torch.library.custom_op` with registered autograd is M2.
 
 ### 4.4 Per-element shape parameters (later, if a consumer needs them)

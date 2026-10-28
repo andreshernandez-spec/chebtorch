@@ -37,7 +37,7 @@ python -m pytest -q                       # ~1.5 min; GPU tests run when CUDA is
                                           #  parity tests when chebax imports
 python tools/export.py                    # every _<family>_data.py, from the installed chebax
 python tools/export.py --fixtures         # also the mpmath fixtures (~40 s)
-python benchmarks/tweedie_gpu.py          # GPU timings, ~12 min; results/ holds dated output
+python benchmarks/tweedie_gpu.py          # GPU timings, ~15 min; results/ holds dated output
 ```
 
 The export needs chebax installed editable from its git checkout
