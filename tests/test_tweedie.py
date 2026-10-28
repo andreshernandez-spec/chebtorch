@@ -13,23 +13,33 @@ same float32 inputs, which separates the arithmetic from the rounding of the
 inputs (at p = 1.05 df/dp is in the thousands, so rounding p alone moves the
 density by ~1e-4).
 
-Measured worst (2026-10-26, torch 2.13 on CPU and an RTX 3080 Laptop; torch
-2.4.1, the CI floor, gives the same on CPU; the bars are about 4x):
+Measured worst (2026-10-28, torch 2.13 on CPU and an RTX 3080 Laptop, and
+torch 2.4.1, the CI floor, on CPU; the bars are about 4x):
 
-float64   ln W 7.3e-16, d/dz 1.0e-14, d/drho 1.2e-14; density 7.6e-13,
-          d/dp 4.3e-11, d/dln mu 8.7e-14, d/dln phi 7.0e-12, d/dln y 5.8e-12.
-          All at p = 1.05. Below the split lgamma(rho n) reaches ~4000 in the
-          series and eps |lgamma| survives into an O(1) log-density (d/dp also
-          carries drho/dp = -400 there); d/dln mu is worst in the tail with y
-          near mu and mu/phi ~ 2000, where the deviance cancels.
+float64   ln W 7.3e-16, d/dz 1.0e-14, d/drho 1.2e-14; density 9.9e-13,
+          d/dp 6.1e-11, d/dln mu 4.0e-16, d/dln phi 9.8e-12, d/dln y 6.0e-12.
+          All but d/dln mu at p = 1.05: below the split lgamma(rho n) reaches
+          ~4000 in the series and eps |lgamma| survives into an O(1)
+          log-density (d/dp also carries drho/dp = -400 there). d/dln mu comes
+          from the deviance's closed form everywhere, so it is near an ulp.
 float32   ln W 5.6e-7, d/dz 1.7e-6, d/drho 4.4e-6 (z within float32's range),
           and by p, the same cancellation at float32's eps:
                       density  d/dp     d/dln mu  d/dln phi  d/dln y
-          p < 1.1     3.1e-4   2.0e-2   1.9e-4    3.8e-3     2.0e-3
-          p < 1.3     1.6e-5   4.5e-4   2.5e-6    5.2e-5     3.5e-5
-          p >= 1.3    1.5e-6   2.1e-5   1.9e-6    4.3e-6     4.4e-6
+          p < 1.1     4.1e-4   2.0e-2   1.6e-7    5.3e-3     3.8e-3
+          p < 1.3     2.3e-5   5.1e-4   1.8e-7    8.1e-5     4.4e-5
+          p >= 1.3    5.7e-6   7.3e-5   1.8e-7    8.5e-6     2.1e-6
+          The density's y/theta - lambda is formed from the deviance (for the
+          exact mean gradient), which costs a factor ~1/(1-a) in d/dln y near
+          p = 1 and ~1/a in d/dp near p = 2 against forming it directly. At
+          p >= 1.3 the density is worst just outside the deviance's series,
+          where the far form's terms cancel to O(delta^2).
+
+Concentrated data (small phi, saddle scale Z from 4e3 to 4e15, at p = 1.5
+against a closed form): float64 density 2.7e-16, gradients 3.0e-16; float32
+1.3e-7 and 1.6e-7.
 """
 
+import decimal
 import json
 import math
 import os
@@ -50,10 +60,11 @@ DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 BAR_W64 = {"w": 3e-15, "dz": 4e-14, "drho": 5e-14}
 BAR_W32 = {"w": 2.5e-6, "dz": 7e-6, "drho": 1.8e-5}
 # (density, (d/dp, d/dln mu, d/dln phi, d/dln y)); float32 by band of p
-BAR_F64 = (3e-12, (1.7e-10, 3.5e-13, 2.8e-11, 2.4e-11))
-BAR_F32 = ((1.1, 1.2e-3, (8e-2, 8e-4, 1.5e-2, 8.5e-3)),
-           (1.3, 6.5e-5, (1.8e-3, 1e-5, 2.4e-4, 1.2e-4)),
-           (2.0, 6e-6, (8.5e-5, 8e-6, 1.7e-5, 1.8e-5)))
+BAR_F64 = (4e-12, (2.5e-10, 1.6e-15, 4e-11, 2.4e-11))
+BAR_F32 = ((1.1, 1.6e-3, (8e-2, 6.5e-7, 2.1e-2, 1.5e-2)),
+           (1.3, 9e-5, (2e-3, 7e-7, 3.2e-4, 1.8e-4)),
+           (2.0, 2.3e-5, (3e-4, 7e-7, 3.4e-5, 8.5e-6)))
+BAR_CONCENTRATED = {torch.float64: (1.2e-15, 1.2e-15), torch.float32: (5e-7, 6.5e-7)}
 ARGS = ("p", "mu", "phi", "y")
 
 
@@ -160,7 +171,7 @@ def test_table_limit_is_c1():
     # fixture reaches, in closed form
     for t in torch.linspace(-1, 1, 41, dtype=torch.float64):
         r = torch.exp(t * A1)
-        coefs = _split(r)[2]
+        _, coefs = _split(r)
         c1 = -(2 * r + 1) * (r + 2) / (24 * r)
         assert abs(cheb(_t(-1.0), coefs) - c1) <= 4e-15
 
@@ -408,3 +419,75 @@ def test_cuda_graph_capture():
     torch.cuda.synchronize()
     assert torch.equal(kept, tweedie_logpdf(1.4, mu, 0.8, y))
     assert torch.equal(new, tweedie_logpdf(1.71, mu, 0.8, y))
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_concentrated_densities(device):
+    # Far past what the series reference reaches. The deviance near the mean
+    # used to come from ln y - ln mu and a difference of two expm1 terms,
+    # which lost delta = (y - mu)/mu: float32 gave 2.53 for -5.28 at the
+    # second point. float64 against mpmath, float32 against float64 at the
+    # same inputs, gradients in ln mu, ln phi, ln y as above.
+    for dtype, (bar_f, bar_g) in BAR_CONCENTRATED.items():
+        worst_f = worst_g = 0.0
+        for c in FX["concentrated"]:
+            xs = [c[k] for k in ("mu", "phi", "y")]
+            if dtype == torch.float32:
+                xs = [_to32(k, x) for k, x in zip(("mu", "phi", "y"), xs)]
+
+            def fn(mu, phi, y):
+                return tweedie_logpdf(1.5, mu, phi, y)
+
+            v, g = _eval(fn, xs, dtype, device)
+            if dtype == torch.float64:
+                r, gr = c["value"], c["grad"]
+            else:
+                r, gr = _eval(fn, xs, torch.float64, device)
+            worst_f = max(worst_f, _rel(v, r))
+            worst_g = max([worst_g] + [_rel(x * a, x * b) for x, a, b in zip(xs, g, gr)])
+        assert worst_f <= bar_f and worst_g <= bar_g, (dtype, worst_f, worst_g)
+
+
+def test_extreme_deviance_scales():
+    # y/mu overflows at y = 1e10, mu = 1e-300 under a finite density: at
+    # p = 1.5 the half-deviance is 2y/sqrt(mu) - 4 sqrt(y) + 2 sqrt(mu), and
+    # the rest of ln f is below its last digit
+    got = tweedie_logpdf(1.5, 1e-300, 1.0, _t(1e10)).item()
+    assert abs(got / -2e160 - 1) <= 1e-15, got
+    # phi = 1e-200 at the mean: ln f = -ln(2 pi phi)/2 + O(1/Z). The p and phi
+    # gradients were nan, from unselected forms whose partials overflow there
+    # and from autograd squaring phi in d(h/phi)/dphi
+    args = [_t(v).requires_grad_(True) for v in (1.5, 1.0, 1e-200, 1.0)]
+    v = tweedie_logpdf(*args)
+    gp, gmu, gphi, gy = (g.item() for g in torch.autograd.grad(v, args))
+    assert v.item() == pytest.approx(-0.5 * math.log(2 * math.pi * 1e-200), rel=1e-15)
+    assert abs(gp) <= 1e-150 and gmu == 0.0, (gp, gmu)
+    assert gphi == pytest.approx(-0.5e200, rel=1e-15) and gy == pytest.approx(-0.75, rel=1e-15)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_mean_gradient_is_exact_at_extreme_scales(device):
+    # Tweedie is an exponential dispersion family, so d ln f/dmu is exactly
+    # (y - mu) / (phi mu^p), 0 at y = mu. Autograd of the deviance squares mu,
+    # which overflows at mu = 1e-220, and as two separate terms the mu
+    # derivatives cancelled only to rounding at y = mu (1e286 at mu = 1e-300).
+    # Reference in decimal at 50 digits; measured worst 2.7e-16 over 72 points.
+    decimal.getcontext().prec = 50
+    dec = decimal.Decimal
+    for p, mu, phi in [(p, mu, phi) for p in (P_LO, 1.5, P_HI)
+                       for mu, phi in ((1e-300, 1e-150), (1e-300, 1e200), (1e-220, 1e-150),
+                                       (1e-220, 1e-200), (1e100, 1e-10), (1e250, 1e10))]:
+        for y in (mu, mu * 1.001, mu * 0.7, mu * 20.0):
+            args = [torch.tensor(x, dtype=torch.float64, device=device, requires_grad=True)
+                    for x in (p, mu, phi, y)]
+            v = tweedie_logpdf(*args)
+            assert torch.isfinite(v), (p, mu, phi, y)
+            g = [x.item() for x in torch.autograd.grad(v, args)]
+            assert not any(map(math.isnan, g)), (p, mu, phi, y, g)
+            ref = (dec(y) - dec(mu)) / (dec(phi) * dec(mu) ** dec(p))
+            if ref == 0:
+                assert g[1] == 0.0, (p, mu, phi, y, g[1])
+            elif abs(ref) > dec(torch.finfo(torch.float64).max):
+                assert g[1] == math.copysign(math.inf, ref), (p, mu, phi, y, g[1])
+            else:
+                assert abs(dec(g[1]) - ref) <= dec(1.1e-15) * abs(ref), (p, mu, phi, y, g[1])
