@@ -47,7 +47,10 @@ class Tables:
             with torch.inference_mode(False):
                 t = torch.tensor(self._data[name], dtype=torch.float64)
                 t = t.reshape(self._shapes[name]).to(dtype=dtype, device=device)
-            self._cache[key] = t
+            # built under torch.compile, t is a value of the graph, which a
+            # CUDA graph replay overwrites (mode="reduce-overhead")
+            if not torch.compiler.is_compiling():
+                self._cache[key] = t
         return t
 
 

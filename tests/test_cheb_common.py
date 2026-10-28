@@ -1,6 +1,7 @@
 """The caches in cheb_common.py. Tables and Memo build outside inference
-mode; Memo keeps python numbers only, per (value, dtype, device), never
-under torch.compile or CUDA graph capture, and at most _KEEP of them."""
+mode and keep nothing built under torch.compile; Memo keeps python numbers
+only, per (value, dtype, device), never under CUDA graph capture, and at
+most _KEEP of them."""
 
 import pytest
 import torch
@@ -61,12 +62,16 @@ def test_caches_build_outside_inference_mode():
     (x * kept * table).sum().backward()
 
 
-def test_memo_keeps_nothing_under_torch_compile():
+def test_caches_keep_nothing_under_torch_compile():
+    # what a compiled call builds is a value of its graph, and with CUDA
+    # graphs (mode="reduce-overhead") the next replay overwrites it
     memo, _ = _counting()
-    f = torch.compile(lambda y: memo(1.5, torch.float64, y.device)[0] * y)
+    tables = Tables({"T": (2,)}, {"T": [1.0, 2.0]})
+    f = torch.compile(lambda y: memo(1.5, torch.float64, y.device)[0]
+                      * tables("T", torch.float64, y.device) * y)
     assert torch.equal(f(torch.ones(2, dtype=torch.float64)),
-                       torch.full((2,), 3.0, dtype=torch.float64))
-    assert not memo._kept
+                       torch.tensor([3.0, 6.0], dtype=torch.float64))
+    assert not memo._kept and not tables._cache
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
