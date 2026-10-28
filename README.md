@@ -18,6 +18,9 @@ d = chebtorch.Tweedie(mu=torch.full((3,), 2.0), phi=0.8, power=1.4)
 d.log_prob(torch.tensor([0.0, 1.0, 3.0])), d.sample((5,))
 ```
 
+A power that is not learned is cheaper as a python number, as in `Tweedie`
+above: what depends on it alone is computed at its first call and kept.
+
 ## What's in
 
 | family | functions | box | float64 accuracy |

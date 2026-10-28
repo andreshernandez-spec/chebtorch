@@ -37,7 +37,7 @@ import math
 import torch
 from torch.distributions import constraints
 
-from .cheb_common import Tables, cheb, device_of, scalar, tensor_of, work_dtype
+from .cheb_common import Memo, Tables, cheb, device_of, scalar, tensor_of, work_dtype
 from ._tweedie_data import (A1, DATA, N_TERMS, P_HI, P_LO, RHO_MAX, RHO_MIN, S1,
                             SHAPES, ZA)
 
@@ -91,10 +91,33 @@ class _LogSeries(torch.autograd.Function):
 
 
 def _split(rho):
-    """Z1 and the tail series' 32 coefficients in x at this rho."""
+    """Z1, u = ln z at Z1, and the tail series' 32 coefficients in x, at
+    this rho."""
     z1 = ZA + S1 * (1 + rho) ** 2
+    u1 = (1 + rho) * torch.log(rho * z1 / (1 + rho)) - torch.log(rho)
     coefs = cheb(torch.log(rho) / A1, _tables("TABLE_TAIL", rho.dtype, rho.device).T)
-    return z1, coefs
+    return z1, u1, coefs
+
+
+@Memo
+def _rho_terms(rho):
+    """What depends on rho alone: whether it is in the box, then rho (1, a
+    stand-in, outside it) and _split at it."""
+    in_box = (rho >= RHO_MIN) & (rho <= RHO_MAX)
+    rho = torch.where(in_box, rho, torch.ones_like(rho))
+    return (in_box, rho) + _split(rho)
+
+
+@Memo
+def _p_terms(p):
+    """What depends on p alone: whether it is in the box, then p (1.5, a
+    stand-in, outside it), rho, 2 - p, p - 1 and _split at rho."""
+    # the box is checked on p as given: in float32, p = 1.05 rounds to
+    # 1.04999995, whose rho is just past RHO_MAX
+    in_box = (p >= P_LO) & (p <= P_HI)
+    p = torch.where(in_box, p, torch.full_like(p, 1.5))
+    rho = (2 - p) / (p - 1)
+    return (in_box, p, rho, 2 - p, p - 1) + _split(rho)
 
 
 def _half_deviance(a, mu, y):
@@ -109,9 +132,8 @@ def _half_deviance(a, mu, y):
     return torch.pow(mu, a) * num / (a * (a - 1))
 
 
-def _log_w(rho, z):
-    """ln Phi(rho, 0; z) for rho in the box and z > 0."""
-    z1, coefs = _split(rho)
+def _log_w(rho, z1, u1, coefs, z):
+    """ln Phi(rho, 0; z) for rho in the box and z > 0, given _split at rho."""
     # pow keeps Z to an ulp where exp((ln rho + ln z)/(1+rho)) would carry
     # eps |ln z|; z^e cannot overflow for e < 1
     e = 1 / (1 + rho)
@@ -119,7 +141,6 @@ def _log_w(rho, z):
     inner = big_z <= z1
     # each branch gets inputs from its own region: the series runs at the
     # split in tail lanes, the tail formula at Z1 in inner lanes
-    u1 = (1 + rho) * torch.log(rho * z1 / (1 + rho)) - torch.log(rho)
     log_w_inner = _LogSeries.apply(rho, torch.where(inner, torch.log(z), u1))
     zt = torch.where(inner, z1, big_z)
     log_w_tail = (zt + 0.5 * torch.log(rho * zt / (1 + rho)) - _HALF_LOG_2PI
@@ -127,20 +148,18 @@ def _log_w(rho, z):
     return torch.where(inner, log_w_inner, log_w_tail)
 
 
-def _log_density(p, mu, phi, y):
-    """(ln f(y), lambda) for p in the box and mu, phi, y > 0."""
-    rho = (2 - p) / (p - 1)
-    a = 2 - p
+def _log_density(p_terms, mu, phi, y):
+    """(ln f(y), lambda) for mu, phi, y > 0 and p_terms from _p_terms, less
+    in_box."""
+    p, rho, a, pm1, z1, u1, coefs = p_terms
     lam = torch.pow(mu, a) / (phi * a)
-    z1, coefs = _split(rho)
-    big_z = torch.pow(y, a) / (phi * a * (p - 1))
+    big_z = torch.pow(y, a) / (phi * a * pm1)
     inner = big_z <= z1
     # inner: the density as defined, ln W on u = ln z. Tail lanes run it at
     # y = mu and the series at the split, where nothing overflows
     y_inner = torch.where(inner, y, mu)
-    log_theta = torch.log(phi * (p - 1)) + (p - 1) * torch.log(mu)
+    log_theta = torch.log(phi * pm1) + pm1 * torch.log(mu)
     u = torch.log(lam) + rho * (torch.log(y_inner) - log_theta)
-    u1 = (1 + rho) * torch.log(rho * z1 / (1 + rho)) - torch.log(rho)
     log_f_inner = (-lam - torch.exp(torch.log(y_inner) - log_theta)
                    - torch.log(y_inner)
                    + _LogSeries.apply(rho, torch.where(inner, u, u1)))
@@ -160,6 +179,11 @@ def log_wright_bessel0(rho, z):
     floating dtype among the arguments, else the default dtype (float16 and
     bfloat16 through float32), on the device of the first tensor argument.
 
+    A python rho is the cheaper form for a fixed rho: what depends on rho
+    alone is computed at the first call with that rho (per dtype and device)
+    and kept, and only that call waits for the GPU. A tensor rho recomputes it
+    on every call.
+
     z = 0 gives -inf (Phi(rho, 0; 0) = 0). z < 0, nan and a tensor rho outside
     the box give nan; a python rho outside it raises ValueError.
 
@@ -171,11 +195,10 @@ def log_wright_bessel0(rho, z):
     dev = device_of(z, rho)
     z = tensor_of(z, work, dev)
     rho = scalar(rho, work, dev, "log_wright_bessel0", "rho", RHO_MIN, RHO_MAX)
-    in_box = (rho >= RHO_MIN) & (rho <= RHO_MAX)
+    in_box, *rho_terms = _rho_terms(rho, work, dev)
     positive = z > 0
-    # stand-ins for the lanes the result masks, so no branch sees them
-    log_w = _log_w(torch.where(in_box, rho, torch.ones_like(rho)),
-                   torch.where(positive, z, torch.ones_like(z)))
+    # a stand-in for the lanes the result masks, so no branch sees them
+    log_w = _log_w(*rho_terms, torch.where(positive, z, torch.ones_like(z)))
     log_w = torch.where(positive, log_w, torch.where(z == 0, -math.inf, math.nan))
     return torch.where(in_box, log_w, math.nan).to(out)
 
@@ -190,6 +213,11 @@ def tweedie_logpdf(p, mu, phi, y):
     (float16 and bfloat16 through float32), on the device of the first tensor
     argument.
 
+    A python p is the cheaper form for a fixed p: what depends on p alone,
+    such as the tail series' coefficients, is computed at the first call with
+    that p (per dtype and device) and kept, and only that call waits for the
+    GPU. A tensor p recomputes it on every call.
+
     mu <= 0, phi <= 0, y < 0, nan and a tensor p outside the box give nan; a
     python p outside it raises ValueError.
 
@@ -203,16 +231,13 @@ def tweedie_logpdf(p, mu, phi, y):
     mu, phi, y = (tensor_of(v, work, dev) for v in (mu, phi, y))
     mu, phi, y = torch.broadcast_tensors(mu, phi, y)
     p = scalar(p, work, dev, "tweedie_logpdf", "p", P_LO, P_HI)
-    # the box is checked on p as given: in float32, p = 1.05 rounds to
-    # 1.04999995, whose rho is just past RHO_MAX
-    in_box = (p >= P_LO) & (p <= P_HI)
+    in_box, *p_terms = _p_terms(p, work, dev)
     valid = (mu > 0) & (phi > 0) & (y >= 0)
     positive = valid & (y > 0)
     # stand-ins for the lanes the result masks, so no branch sees them
     one = torch.ones_like(y)
     mu_s = torch.where(valid, mu, one)
-    log_f, lam = _log_density(torch.where(in_box, p, torch.full_like(p, 1.5)),
-                              mu_s, torch.where(valid, phi, one),
+    log_f, lam = _log_density(p_terms, mu_s, torch.where(valid, phi, one),
                               torch.where(positive, y, mu_s))
     log_f = torch.where(positive, log_f, -lam)
     log_f = torch.where(valid, log_f, math.nan)
@@ -225,7 +250,8 @@ class Tweedie(torch.distributions.Distribution):
     Y is exactly 0 with probability exp(-mu^(2-p) / (phi (2-p))) and positive
     and continuous otherwise. Mean mu, variance phi mu^power. mu and phi
     broadcast; power is a scalar in [1.05, 1.95], checked as in
-    tweedie_logpdf, which log_prob is (same dtype, derivative and nan rules).
+    tweedie_logpdf, which log_prob is (same dtype, derivative and nan rules,
+    and a python power stays a python number, the cheaper form).
     Sampling draws the Poisson count and a gamma total; it is not
     reparameterized (the count is discrete).
     """
@@ -239,7 +265,10 @@ class Tweedie(torch.distributions.Distribution):
         dev = device_of(mu, phi, power)
         mu, phi = (tensor_of(v, work, dev) for v in (mu, phi))
         self.mu, self.phi = torch.broadcast_tensors(mu, phi)
-        self.power = scalar(power, work, dev, "Tweedie", "power", P_LO, P_HI)
+        # log_prob passes a python power on as a number, whose terms
+        # tweedie_logpdf keeps between calls
+        self._power = scalar(power, work, dev, "Tweedie", "power", P_LO, P_HI)
+        self.power = tensor_of(self._power, work, dev)
         super().__init__(self.mu.shape, validate_args=validate_args)
 
     def expand(self, batch_shape, _instance=None):
@@ -247,7 +276,7 @@ class Tweedie(torch.distributions.Distribution):
         batch_shape = torch.Size(batch_shape)
         new.mu = self.mu.expand(batch_shape)
         new.phi = self.phi.expand(batch_shape)
-        new.power = self.power
+        new._power, new.power = self._power, self.power
         super(Tweedie, new).__init__(batch_shape, validate_args=False)
         new._validate_args = self._validate_args
         return new
@@ -263,7 +292,7 @@ class Tweedie(torch.distributions.Distribution):
     def log_prob(self, value):
         if self._validate_args:
             self._validate_sample(value)
-        return tweedie_logpdf(self.power, self.mu, self.phi, value)
+        return tweedie_logpdf(self._power, self.mu, self.phi, value)
 
     def sample(self, sample_shape=torch.Size()):
         shape = self._extended_shape(sample_shape)

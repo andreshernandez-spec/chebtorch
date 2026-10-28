@@ -32,7 +32,10 @@ float32   ln W 5.6e-7, d/dz 1.7e-6, d/drho 4.4e-6 (z within float32's range),
 
 import json
 import math
+import os
 import pathlib
+import subprocess
+import sys
 
 import pytest
 import torch
@@ -157,7 +160,7 @@ def test_table_limit_is_c1():
     # fixture reaches, in closed form
     for t in torch.linspace(-1, 1, 41, dtype=torch.float64):
         r = torch.exp(t * A1)
-        _, coefs = _split(r)
+        coefs = _split(r)[2]
         c1 = -(2 * r + 1) * (r + 2) / (24 * r)
         assert abs(cheb(_t(-1.0), coefs) - c1) <= 4e-15
 
@@ -320,10 +323,12 @@ def test_torch_compile_matches_eager():
 @pytest.mark.filterwarnings("ignore:Synchronization debug mode")
 def test_python_numbers_do_not_wait_for_the_gpu():
     # torch.tensor(1.4, device="cuda") waits for all queued GPU work, on
-    # every call; the tables are copied once, in the first call here
+    # every call. The first call at a python number waits once: it copies
+    # the tables and keeps what depends on the number alone
     y = torch.tensor([0.0, 0.3, 2.0, 40.0], device="cuda")
     mu = torch.full_like(y, 2.0, requires_grad=True)
     tweedie_logpdf(1.4, mu, 0.8, y)
+    log_wright_bessel0(1.0, y + 1)
     torch.cuda.set_sync_debug_mode("error")
     try:
         tweedie_logpdf(1.4, mu, 0.8, y).sum().backward()
@@ -332,3 +337,74 @@ def test_python_numbers_do_not_wait_for_the_gpu():
         Tweedie(mu, 0.8, 1.4, validate_args=False).log_prob(y)
     finally:
         torch.cuda.set_sync_debug_mode(0)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_python_and_tensor_parameters_agree(device):
+    # a python p or rho reads the terms kept at its first call, a tensor
+    # computes them on every call: the same bits, values and gradients
+    y = [0.0, 1e-3, 0.3, 2.0, 40.0, 1e4]
+    for dtype in (torch.float64, torch.float32):
+        def run(fn, s, *xs):
+            xs = [torch.tensor(x, dtype=dtype, device=device, requires_grad=True)
+                  for x in xs]
+            v = fn(s, *xs)
+            return [v, *torch.autograd.grad(v.sum(), xs)]
+
+        for p in (P_LO, 1.37, P_HI):
+            ref = run(tweedie_logpdf, torch.tensor(p, dtype=dtype, device=device),
+                      2.0, 0.8, y)
+            for _ in range(2):              # no call may change what is kept
+                got = run(tweedie_logpdf, p, 2.0, 0.8, y)
+                assert all(map(torch.equal, got, ref)), (dtype, p)
+        for rho in (1 / 19, 0.83, 19.0):
+            ref = run(log_wright_bessel0, torch.tensor(rho, dtype=dtype, device=device),
+                      [1e-3, 0.5, 30.0])
+            for _ in range(2):
+                got = run(log_wright_bessel0, rho, [1e-3, 0.5, 30.0])
+                assert all(map(torch.equal, got, ref)), (dtype, rho)
+
+
+INFERENCE_FIRST = r"""
+import torch
+from chebtorch import log_wright_bessel0, tweedie_logpdf
+
+for dev in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):
+    y = torch.tensor([0.0, 0.3, 2.0, 40.0], device=dev)
+    with torch.inference_mode():            # builds the tables, then the kept terms
+        tweedie_logpdf(torch.tensor(1.4, device=dev), 2.0, 0.8, y)
+        tweedie_logpdf(1.4, 2.0, 0.8, y)
+        log_wright_bessel0(1.0, y + 1)
+    p = torch.tensor(1.4, device=dev, requires_grad=True)
+    mu = torch.full_like(y, 2.0, requires_grad=True)
+    tweedie_logpdf(p, mu, 0.8, y).sum().backward()
+    tweedie_logpdf(1.4, mu, 0.8, y).sum().backward()
+    log_wright_bessel0(p, y + 1).sum().backward()
+"""
+
+
+def test_a_first_call_in_inference_mode_leaves_gradients_working():
+    # autograd cannot save inference tensors, so nothing cached may be one;
+    # a fresh process, since this suite has filled the caches already. env
+    # is os.environ: conda's numpy sets MKL_THREADING_LAYER in the C
+    # environment only, and a child importing torch first refuses it
+    out = subprocess.run([sys.executable, "-c", INFERENCE_FIRST],
+                         capture_output=True, text=True, env=dict(os.environ))
+    assert out.returncode == 0, out.stderr[-2000:]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_cuda_graph_capture():
+    # p = 1.4 is kept before the capture; p = 1.71 is first seen in it and
+    # computed in the graph instead, since capture allows no waiting
+    y = torch.tensor([0.0, 0.3, 2.0, 40.0], device="cuda")
+    mu = torch.full_like(y, 2.0)
+    tweedie_logpdf(1.4, mu, 0.8, y)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        kept = tweedie_logpdf(1.4, mu, 0.8, y)
+        new = tweedie_logpdf(1.71, mu, 0.8, y)
+    graph.replay()
+    torch.cuda.synchronize()
+    assert torch.equal(kept, tweedie_logpdf(1.4, mu, 0.8, y))
+    assert torch.equal(new, tweedie_logpdf(1.71, mu, 0.8, y))

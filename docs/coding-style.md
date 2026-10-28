@@ -54,7 +54,10 @@ gives nan outside the box.
 A public entry point normalizes its inputs (dtype, device, broadcasting, the
 per-call parameter), puts stand-ins in the lanes its result will not use,
 calls the evaluation helper and selects the result. The numerical work lives
-in private helpers whose docstrings state the domain they assume.
+in private helpers whose docstrings state the domain they assume. What depends
+on the per-call parameter alone goes in one function wrapped in `Memo` from
+`cheb_common.py` (tweedie.py's `_p_terms`), called with what `scalar` returns,
+so a python number pays for it once per value, dtype and device.
 
 Order a family module: module docstring, imports and constants, evaluation
 helpers, public functions, then the distribution class. Keep an
