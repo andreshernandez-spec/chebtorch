@@ -49,8 +49,8 @@ import pytest
 import torch
 
 from chebtorch.cheb_common import cheb
-from chebtorch.tweedie import (A1, P_HI, P_LO, Tweedie, _split, log_wright_bessel0,
-                               tweedie_logpdf)
+from chebtorch.tweedie import (A1, P_HI, P_LO, Tweedie, _HalfDeviance, _near_coefs, _split,
+                               log_wright_bessel0, tweedie_logpdf)
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "tweedie.json"
 FX = json.loads(FIXTURES.read_text())
@@ -273,6 +273,28 @@ def test_second_derivatives():
         fd_pm = (grad_p(p0, 2.0 + h)[0] - grad_p(p0, 2.0 - h)[0]).item() / (2 * h)
         assert d2p.item() == pytest.approx(fd_p, rel=1e-6), p0
         assert d2pm.item() == pytest.approx(fd_pm, rel=1e-6), p0
+
+
+def test_closed_form_partials_match_finite_differences():
+    # _HalfDeviance's partials are derived by hand, in each of its three
+    # forms (y/mu = 1.0002 and 1.2 near, 0.65 and 2 mid, 4.5 and 0.1 far),
+    # and with c, dc carrying a's dependence; gradgradcheck covers the
+    # create_graph path. Then the density, whose forms meet at the split.
+    def half_deviance(a, mu, y):
+        c, dc = _near_coefs(a)
+        return _HalfDeviance.apply(a, c, dc, mu, y)
+
+    mu = _t([2.0] * 6).requires_grad_(True)
+    y = _t([2.0004, 2.4, 1.3, 4.0, 9.0, 0.2]).requires_grad_(True)
+    for a0 in (0.05, 0.37, 0.95):
+        args = (_t(a0).requires_grad_(True), mu, y)
+        assert torch.autograd.gradcheck(half_deviance, args)
+        assert torch.autograd.gradgradcheck(half_deviance, args)
+    y = _t([0.05, 1.3, 2.0001, 3.1, 4.0, 30.0]).requires_grad_(True)
+    for p0 in (1.06, 1.37, 1.9):
+        args = (_t(p0).requires_grad_(True), mu, _t(0.8).requires_grad_(True), y)
+        assert torch.autograd.gradcheck(tweedie_logpdf, args)
+        assert torch.autograd.gradgradcheck(tweedie_logpdf, args)
 
 
 def test_normalizes_with_its_moments():
