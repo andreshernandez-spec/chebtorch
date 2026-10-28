@@ -26,13 +26,11 @@ float32   ln W 5.6e-7, d/dz 1.7e-6, d/drho 4.4e-6 (z within float32's range),
           and by p, the same cancellation at float32's eps:
                       density  d/dp     d/dln mu  d/dln phi  d/dln y
           p < 1.1     4.1e-4   2.0e-2   1.6e-7    5.3e-3     3.8e-3
-          p < 1.3     2.3e-5   5.1e-4   1.8e-7    8.1e-5     4.4e-5
-          p >= 1.3    5.7e-6   7.3e-5   1.8e-7    8.5e-6     2.1e-6
+          p < 1.3     2.3e-5   5.1e-4   1.8e-7    7.7e-5     4.4e-5
+          p >= 1.3    1.5e-6   7.3e-5   1.8e-7    3.5e-6     2.1e-6
           The density's y/theta - lambda is formed from the deviance (for the
           exact mean gradient), which costs a factor ~1/(1-a) in d/dln y near
-          p = 1 and ~1/a in d/dp near p = 2 against forming it directly. At
-          p >= 1.3 the density is worst just outside the deviance's series,
-          where the far form's terms cancel to O(delta^2).
+          p = 1 and ~1/a in d/dp near p = 2 against forming it directly.
 
 Concentrated data (small phi, saddle scale Z from 4e3 to 4e15, at p = 1.5
 against a closed form): float64 density 2.7e-16, gradients 3.0e-16; float32
@@ -62,8 +60,8 @@ BAR_W32 = {"w": 2.5e-6, "dz": 7e-6, "drho": 1.8e-5}
 # (density, (d/dp, d/dln mu, d/dln phi, d/dln y)); float32 by band of p
 BAR_F64 = (4e-12, (2.5e-10, 1.6e-15, 4e-11, 2.4e-11))
 BAR_F32 = ((1.1, 1.6e-3, (8e-2, 6.5e-7, 2.1e-2, 1.5e-2)),
-           (1.3, 9e-5, (2e-3, 7e-7, 3.2e-4, 1.8e-4)),
-           (2.0, 2.3e-5, (3e-4, 7e-7, 3.4e-5, 8.5e-6)))
+           (1.3, 9e-5, (2e-3, 7e-7, 3e-4, 1.8e-4)),
+           (2.0, 6e-6, (3e-4, 7e-7, 1.4e-5, 8.5e-6)))
 BAR_CONCENTRATED = {torch.float64: (1.2e-15, 1.2e-15), torch.float32: (5e-7, 6.5e-7)}
 ARGS = ("p", "mu", "phi", "y")
 

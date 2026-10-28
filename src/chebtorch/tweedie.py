@@ -33,7 +33,7 @@ float64: ln W 7e-16, the density 1e-12, d/dp 6e-11, and 1e-11 for the
 gradients in ln phi and ln y, all at p = 1.05, where lgamma(rho n) reaches
 ~4000 in the series; 4e-16 in ln mu. float32 arithmetic adds the same
 cancellation at its own eps: density 4e-4 and d/dp 2e-2 below p = 1.1,
-2.3e-5 and 5e-4 below p = 1.3, 5.7e-6 and 7e-5 above, and 2e-7 in ln mu.
+2.3e-5 and 5e-4 below p = 1.3, 1.5e-6 and 7e-5 above, and 2e-7 in ln mu.
 Concentrated data (Z from 4e3 to 4e15): 3e-16 in float64, 1.6e-7 in float32.
 """
 
@@ -149,26 +149,39 @@ def _horner(c, x):
     return acc
 
 
+def _deviance_lanes(mu, y):
+    """(near, mid, delta): the lanes with |delta| <= _NEAR, those with
+    |ln(y/mu)| <= 1 otherwise, and delta = (y - mu)/mu in both, 0 elsewhere.
+    No y/mu is formed: it overflows at y = 1e10, mu = 1e-300."""
+    near = (y - mu).abs() <= _NEAR * mu
+    mid = ~near & (y <= math.e * mu) & (math.e * y >= mu)
+    delta = (torch.where(near | mid, y, mu) - mu) / mu
+    return near, mid, delta
+
+
 def _half_deviance(a, c, mu, y):
     """d(y, mu)/2 for power p = 2 - a, a in (0, 1), y > 0, mu > 0, with c
-    from _near_coefs(a).
+    from _near_coefs(a), in three forms of mu^a ((1+delta)^a - 1 - a delta)
+    / (a (a-1)), delta = (y - mu)/mu.
 
-    Near the mean, in delta = (y - mu)/mu, whose subtraction is exact there,
-    it is mu^a sum_k c_k delta^k, the series of _near_coefs. The closed form
+    near: mu^a sum_k c_k delta^k, the series of _near_coefs. The closed form
     there, with x = ln y - ln mu (which carries eps |ln y| where only delta
     matters) and expm1(a x) - a expm1(x) (which cancels two first-order
     terms down to a quadratic one), gave 2.53 for a log-density of -5.28 in
     float32 at (p, mu, phi, y) = (1.5, 1e6, 1e-12, 1e6 + 1/8).
-
-    Away from it, y^a / (a (a-1)) - y mu^(a-1) / (a-1) + mu^a / a, which
-    never forms y/mu: that ratio overflows at y = 1e10, mu = 1e-300 under a
-    finite density."""
-    near = (y - mu).abs() <= _NEAR * mu
-    delta = (torch.where(near, y, mu) - mu) / mu
+    mid: mu^a (expm1(a x) - a delta) / (a (a-1)) with x = log1p(delta). Its
+    first-order cancellation costs about 9 eps / (1 - a) at |delta| = 1/4.
+    far: y^a / (a (a-1)) - y mu^(a-1) / (a-1) + mu^a / a. Its terms are
+    O(1/(a (1-a))) and cancel to O(delta^2), which costs 32 eps / (a (1-a))
+    at |delta| = 1/4 (670 eps at the box edges) but only ~50 eps beyond
+    |ln(y/mu)| = 1, where it takes over. chebax uses it from |delta| = 1/4."""
+    near, mid, delta = _deviance_lanes(mu, y)
     ma = torch.pow(mu, a)
-    series = ma * delta * delta * _horner(c, delta)
+    dn = torch.where(near, delta, 0.0)
+    series = ma * dn * dn * _horner(c, dn)
+    mid_form = ma * (torch.expm1(a * torch.log1p(delta)) - a * delta) / (a * (a - 1))
     far = (torch.pow(y, a) / a - y * torch.pow(mu, a - 1)) / (a - 1) + ma / a
-    return torch.where(near, series, far)
+    return torch.where(near, series, torch.where(mid, mid_form, far))
 
 
 class _HalfDeviance(torch.autograd.Function):
@@ -176,8 +189,8 @@ class _HalfDeviance(torch.autograd.Function):
     there squares mu, in mu^(a-2) and in delta's own derivative, and that
     overflows at mu = 1e-220, where the mean gradient at y = mu is exactly 0.
     In mu and y they are -mu^(a-1) delta and (y^(a-1) - mu^(a-1))/(a-1), the
-    latter through expm1 near the mean; in a, each form's own, the series'
-    through dc from _near_coefs. The c and dc it is given carry no
+    latter through expm1 where |ln(y/mu)| <= 1; in a, each form's own, the
+    series' through dc from _near_coefs. The c and dc it is given carry no
     gradient: the a partial is total. With create_graph the partials are
     formed from tracked ops, so second derivatives are exact too."""
 
@@ -189,19 +202,24 @@ class _HalfDeviance(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad):
         a, c, dc, mu, y = ctx.saved_tensors
-        near = (y - mu).abs() <= _NEAR * mu
-        delta = (torch.where(near, y, mu) - mu) / mu
+        near, mid, delta = _deviance_lanes(mu, y)
+        x = torch.log1p(delta)
         m1 = torch.pow(mu, a - 1)
-        d_y = torch.where(near, m1 * torch.expm1((a - 1) * torch.log1p(delta)),
+        d_y = torch.where(near | mid, m1 * torch.expm1((a - 1) * x),
                           torch.pow(y, a - 1) - m1) / (a - 1)
         d_a = None
         if ctx.needs_input_grad[0]:
             ma, ya, log_mu = torch.pow(mu, a), torch.pow(y, a), torch.log(mu)
-            near_a = ma * delta * delta * (log_mu * _horner(c, delta) + _horner(dc, delta))
+            dn = torch.where(near, delta, 0.0)
+            near_a = ma * dn * dn * (log_mu * _horner(c, dn) + _horner(dc, dn))
+            e, den = torch.expm1(a * x), a * (a - 1)
+            num = e - a * delta
+            mid_a = (log_mu * ma * num / den
+                     + ma * ((x * (e + 1) - delta) * den - num * (2 * a - 1)) / (den * den))
             far = ya / a - y * m1
             far_a = ((ya * torch.log(y) / a - ya / (a * a) - y * m1 * log_mu) / (a - 1)
                      - far / ((a - 1) * (a - 1)) + ma * log_mu / a - ma / (a * a))
-            d_a = (grad * torch.where(near, near_a, far_a)).sum()
+            d_a = (grad * torch.where(near, near_a, torch.where(mid, mid_a, far_a))).sum()
         # exact in every lane, so from delta itself rather than the masked one
         return d_a, None, None, grad * (-m1 * ((y - mu) / mu)), grad * d_y
 
