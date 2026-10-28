@@ -9,12 +9,12 @@ by sum max(1, |d/dp|), since chebtorch returns only the sum for a scalar p.
 Skipped unless chebax and jax import; CI's weekly parity job installs chebax
 from main.
 
-Measured worst difference (2026-10-26, chebax main at dcdb931 on jax 0.11, torch 2.13,
-CPU; bars about 4x): density 8.0e-13, d/dp 2.0e-15, d/dln mu 4.1e-13,
-d/dln phi 8.4e-12, d/dln y 7.5e-12; ln W 7.1e-15, d/dz 1.1e-14, d/drho 5.1e-16.
-Against mpmath at the worst points, chebtorch is the closer of the two for the
-density, d/dln mu and d/dln phi, chebax for d/dln y; tests/fixtures holds
-those points.
+Measured worst difference (2026-10-28, chebax main at 53034de on jax 0.11, torch 2.13,
+CPU; bars about 4x): density 6.8e-13, d/dp 5.1e-16, d/dln mu 5.6e-16,
+d/dln phi 7.7e-12, d/dln y 7.2e-12; ln W 7.1e-15, d/dz 1.1e-14, d/drho 5.1e-16.
+Both take the mean gradient from the deviance's closed form. chebtorch keeps
+an expm1 form of the deviance for 1/4 < |y/mu - 1| and |ln(y/mu)| <= 1, where
+chebax uses its far form; the difference there is below the density's floor.
 """
 
 import numpy as np
@@ -29,7 +29,7 @@ from chebtorch import log_wright_bessel0, tweedie_logpdf  # noqa: E402
 
 N = 4000
 PS = (1.05, 1.07, 1.15, 1.3, 1.5, 1.7, 1.9, 1.95)
-BARS = {"f": 3.2e-12, "dp": 8e-15, "dlnmu": 1.6e-12, "dlnphi": 3.4e-11, "dlny": 3e-11,
+BARS = {"f": 2.7e-12, "dp": 2e-15, "dlnmu": 2.2e-15, "dlnphi": 3.1e-11, "dlny": 2.9e-11,
         "w": 2.8e-14, "dz": 4.4e-14, "drho": 2e-15}
 
 

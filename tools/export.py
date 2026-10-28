@@ -175,7 +175,17 @@ def tweedie_fixtures():
             row["grad"] = [None if i == 3 and c[3] == 0
                            else float(ref.tweedie_grad(*c, i)) for i in range(4)]
         density.append(row)
+    # concentrated data, saddle scale Z from 4e3 to 4e15 at p = 1.5, past what
+    # the series reference reaches: chebax's test_tweedie.py CONCENTRATED
+    concentrated = [{"p": 1.5, "mu": mu, "phi": phi, "y": y,
+                     "value": float(ref.tweedie_logpdf_p15(mu, phi, y)),
+                     "grad": [float(ref.tweedie_grad_p15(mu, phi, y, i)) for i in range(3)]}
+                    for mu, phi, y in ((1e6, 1e-8, 1000010.0), (1e6, 1e-12, 1000000.125),
+                                       (1.0, 1e-10, 1.0 + 2.0 ** -20), (5.0, 1e-9, 4.0),
+                                       (2.0, 1e-7, 2.0), (1e-3, 1e-9, 1.2e-3),
+                                       (1.0, 1e-6, 1.001))]
     return {"log_wright_bessel0": wright, "tweedie_logpdf": density,
+            "concentrated": concentrated,
             "references": "mpmath at 40 dps, tools/references.py"}
 
 

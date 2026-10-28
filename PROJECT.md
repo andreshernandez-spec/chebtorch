@@ -158,17 +158,18 @@ DATA = {"TABLE_TAIL": (0.98969..., ...)}
   memory), and the inverse CDFs (implicit function theorem; never differentiate the
   fixed-iteration solver).
 - Measured (`benchmarks/tweedie_gpu.py`, 2026-10-28, RTX 3080 Laptop, float32):
-  eager is 3.5-5.2 ms for values and 13-17 ms with gradients up to N = 2^16
-  with a tensor p (431 and 1341 CUDA kernels per call), and 1.6-2.7 / 4.4-6.5
-  ms with a python p, whose terms are kept (211 and 525 kernels, gradients in
-  mu and phi), against 0.1 / 1 ms for neuralforecast's kernel-only loss;
-  compiled, 0.1-0.35 / 0.6-1.6 ms, after 8-71 s of cold compile per shape. A
-  training loop that does not compile pays the eager cost every step. With a
-  python p the tail's 31-step Chebyshev sum over the lanes is what to shrink
-  next; with a tensor p, also the 63-step sum for the tail's coefficients and
-  its backward. Compiled float64 is slow while the series is one pass over
-  the lanes (13 ms at 2^16): inductor fuses the whole density into its
-  reduction. `torch.library.custom_op` with registered autograd is M2.
+  eager is 3.8-5.7 ms for values and 11-21 ms with gradients up to N = 2^16
+  with a tensor p (510 and 1466 CUDA kernels per call), and 2.6-2.7 / 5.1-5.8
+  ms with a python p, whose terms are kept (279 and 552 kernels, gradients in
+  mu and phi), against 0.1 / 0.8-1.4 ms for neuralforecast's kernel-only
+  loss; compiled, 0.14-0.38 / 0.35-1.6 ms, after 7-65 s of cold compile per
+  shape. A training loop that does not compile pays the eager cost every
+  step. What to shrink next: the tail's 31-step Chebyshev sum over the lanes
+  and the deviance's 26-step series; with a tensor p, also the 63-step sum
+  for the tail's coefficients and its backward. Compiled float64 is slow
+  while the series is one pass over the lanes (8 ms at 2^16 against 6.6
+  eager): inductor fuses the whole density into its reduction.
+  `torch.library.custom_op` with registered autograd is M2.
 
 ### 4.4 Per-element shape parameters (later, if a consumer needs them)
 

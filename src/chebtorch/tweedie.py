@@ -14,22 +14,27 @@ p in (1, 2) puts mass exp(-lambda) at 0 and has, for y > 0,
     rho = (2-p)/(p-1),  z = lambda (y/theta)^rho.
 
 Two regions in Z = y^(2-p) / (phi (2-p)(p-1)), split at Z1 = 12 + 2 (1+rho)^2.
-Below it W is its own series, 64 terms summed in log space. Above it the
-density is exactly the saddlepoint approximation
--d(y, mu)/(2 phi) - ln(2 pi phi y^p)/2 (d the unit deviance) plus a tabulated
-correction T/Z. T is a Chebyshev series in x = 2 Z1/Z - 1 (32 coefficients;
-x = -1 is Z -> inf), each coefficient a Chebyshev series in
-t = ln(rho)/ln(19) (64 coefficients); both coordinates span [-1, 1] over the
-box. The fixtures straddle the seam at Z1 (1 -+ 1e-9). chebax
-(chebax._src.recipes.tweedie_gen) has the measurements behind the split and
-the table.
+Below it W is its own series, 64 terms summed in log space, and
+-lambda - y/theta is formed as -d(y, mu)/(2 phi) + y^a / (a (a-1) phi),
+a = 2 - p, with z built without mu, so mu enters only through the unit
+deviance d and the mean gradient is its exact (y - mu) / (phi mu^p). Above
+it the density is exactly the saddlepoint approximation
+-d(y, mu)/(2 phi) - ln(2 pi phi y^p)/2 plus a tabulated correction T/Z. T is
+a Chebyshev series in x = 2 Z1/Z - 1 (32 coefficients; x = -1 is Z -> inf),
+each coefficient a Chebyshev series in t = ln(rho)/ln(19) (64 coefficients);
+both coordinates span [-1, 1] over the box. d is a series in (y - mu)/mu near
+the mean (_half_deviance), so concentrated data (small phi, Z up to 1e16 and
+beyond) keeps its digits. The fixtures straddle the seam at Z1 (1 -+ 1e-9).
+chebax (chebax._src.recipes.tweedie_gen) has the measurements behind the
+split and the table.
 
 Accuracy against mpmath at 40 digits, |err| / max(1, |ref|), worst cases in
-float64: ln W 7e-16, the density 8e-13, d/dp 4e-11, and 7e-12 for the
-gradients in ln mu, ln phi and ln y, all at p = 1.05, where lgamma(rho n)
-reaches ~4000 in the series. float32 arithmetic adds the same cancellation at
-its own eps: density 3e-4 and d/dp 2e-2 below p = 1.1, 1.6e-5 and 5e-4 below
-p = 1.3, 1.5e-6 and 2e-5 above.
+float64: ln W 7e-16, the density 1e-12, d/dp 6e-11, and 1e-11 for the
+gradients in ln phi and ln y, all at p = 1.05, where lgamma(rho n) reaches
+~4000 in the series; 4e-16 in ln mu. float32 arithmetic adds the same
+cancellation at its own eps: density 4e-4 and d/dp 2e-2 below p = 1.1,
+2.3e-5 and 5e-4 below p = 1.3, 1.5e-6 and 7e-5 above, and 2e-7 in ln mu.
+Concentrated data (Z from 4e3 to 4e15): 3e-16 in float64, 1.6e-7 in float32.
 """
 
 import math
@@ -45,6 +50,8 @@ __all__ = ["Tweedie", "log_wright_bessel0", "tweedie_logpdf"]
 
 _HALF_LOG_2PI = 0.5 * math.log(2 * math.pi)
 _LANES = 1 << 16
+_NEAR = 0.25      # |y/mu - 1| up to which the half-deviance is a series
+_N_NEAR = 26      # and its term count
 _tables = Tables(SHAPES, DATA)
 
 
@@ -91,49 +98,151 @@ class _LogSeries(torch.autograd.Function):
 
 
 def _split(rho):
-    """Z1, u = ln z at Z1, and the tail series' 32 coefficients in x, at
-    this rho."""
+    """Z1 and the tail series' 32 coefficients in x at this rho."""
     z1 = ZA + S1 * (1 + rho) ** 2
-    u1 = (1 + rho) * torch.log(rho * z1 / (1 + rho)) - torch.log(rho)
     coefs = cheb(torch.log(rho) / A1, _tables("TABLE_TAIL", rho.dtype, rho.device).T)
-    return z1, u1, coefs
+    return z1, coefs
+
+
+def _near_coefs(a):
+    """c_2 .. c_27 of the binomial series of ((1+delta)^a - 1 - a delta) /
+    (a (a-1)), c_2 = 1/2 and c_{k+1} = c_k (a-k)/(k+1), and their
+    derivatives in a, c_k sum_{j=2}^{k-1} 1/(a-j). 26 terms leave under
+    3e-17 relative at |delta| = _NEAR for every a in (0, 1)."""
+    j = torch.arange(2, _N_NEAR + 1, dtype=a.dtype, device=a.device)
+    c = 0.5 * torch.cat([torch.ones_like(a)[None], torch.cumprod((a - j) / (j + 1), 0)])
+    dc = c * torch.cat([torch.zeros_like(a)[None], torch.cumsum(1 / (a - j), 0)])
+    return c, dc
 
 
 @Memo
 def _rho_terms(rho):
     """What depends on rho alone: whether it is in the box, then rho (1, a
-    stand-in, outside it) and _split at it."""
+    stand-in, outside it), Z1, u = ln z at Z1 and the tail's coefficients."""
     in_box = (rho >= RHO_MIN) & (rho <= RHO_MAX)
     rho = torch.where(in_box, rho, torch.ones_like(rho))
-    return (in_box, rho) + _split(rho)
+    z1, coefs = _split(rho)
+    u1 = (1 + rho) * torch.log(rho * z1 / (1 + rho)) - torch.log(rho)
+    return in_box, rho, z1, u1, coefs
 
 
 @Memo
 def _p_terms(p):
     """What depends on p alone: whether it is in the box, then p (1.5, a
-    stand-in, outside it), rho, 2 - p, p - 1 and _split at rho."""
+    stand-in, outside it), rho, a = 2 - p, p - 1, ln(p - 1), ln a, _split at
+    rho and _near_coefs at a."""
     # the box is checked on p as given: in float32, p = 1.05 rounds to
     # 1.04999995, whose rho is just past RHO_MAX
     in_box = (p >= P_LO) & (p <= P_HI)
     p = torch.where(in_box, p, torch.full_like(p, 1.5))
     rho = (2 - p) / (p - 1)
-    return (in_box, p, rho, 2 - p, p - 1) + _split(rho)
+    a, pm1 = 2 - p, p - 1
+    return ((in_box, p, rho, a, pm1, torch.log(pm1), torch.log(a)) + _split(rho)
+            + _near_coefs(a))
 
 
-def _half_deviance(a, mu, y):
-    """d(y, mu)/2 for power 2 - a. Near y = mu through expm1, which leaves a
-    cancellation of eps a |ln(y/mu)| relative to Z; pow elsewhere."""
-    x = torch.log(y) - torch.log(mu)
-    near = x.abs() < 1
-    x_near = torch.where(near, x, torch.zeros_like(x))
-    ratio = y / mu
-    num = torch.where(near, torch.expm1(a * x_near) - a * torch.expm1(x_near),
-                      (torch.pow(ratio, a) - 1) - a * (ratio - 1))
-    return torch.pow(mu, a) * num / (a * (a - 1))
+def _horner(c, x):
+    """sum_k c[k] x^k."""
+    acc = c[-1]
+    for k in range(c.shape[0] - 2, -1, -1):
+        acc = torch.addcmul(c[k], acc, x)
+    return acc
+
+
+def _deviance_lanes(mu, y):
+    """(near, mid, delta): the lanes with |delta| <= _NEAR, those with
+    |ln(y/mu)| <= 1 otherwise, and delta = (y - mu)/mu in both, 0 elsewhere.
+    No y/mu is formed: it overflows at y = 1e10, mu = 1e-300."""
+    near = (y - mu).abs() <= _NEAR * mu
+    mid = ~near & (y <= math.e * mu) & (math.e * y >= mu)
+    delta = (torch.where(near | mid, y, mu) - mu) / mu
+    return near, mid, delta
+
+
+def _half_deviance(a, c, mu, y):
+    """d(y, mu)/2 for power p = 2 - a, a in (0, 1), y > 0, mu > 0, with c
+    from _near_coefs(a), in three forms of mu^a ((1+delta)^a - 1 - a delta)
+    / (a (a-1)), delta = (y - mu)/mu.
+
+    near: mu^a sum_k c_k delta^k, the series of _near_coefs. The closed form
+    there, with x = ln y - ln mu (which carries eps |ln y| where only delta
+    matters) and expm1(a x) - a expm1(x) (which cancels two first-order
+    terms down to a quadratic one), gave 2.53 for a log-density of -5.28 in
+    float32 at (p, mu, phi, y) = (1.5, 1e6, 1e-12, 1e6 + 1/8).
+    mid: mu^a (expm1(a x) - a delta) / (a (a-1)) with x = log1p(delta). Its
+    first-order cancellation costs about 9 eps / (1 - a) at |delta| = 1/4.
+    far: y^a / (a (a-1)) - y mu^(a-1) / (a-1) + mu^a / a. Its terms are
+    O(1/(a (1-a))) and cancel to O(delta^2), which costs 32 eps / (a (1-a))
+    at |delta| = 1/4 (670 eps at the box edges) but only ~50 eps beyond
+    |ln(y/mu)| = 1, where it takes over. chebax uses it from |delta| = 1/4."""
+    near, mid, delta = _deviance_lanes(mu, y)
+    ma = torch.pow(mu, a)
+    dn = torch.where(near, delta, 0.0)
+    series = ma * dn * dn * _horner(c, dn)
+    mid_form = ma * (torch.expm1(a * torch.log1p(delta)) - a * delta) / (a * (a - 1))
+    far = (torch.pow(y, a) / a - y * torch.pow(mu, a - 1)) / (a - 1) + ma / a
+    return torch.where(near, series, torch.where(mid, mid_form, far))
+
+
+class _HalfDeviance(torch.autograd.Function):
+    """_half_deviance with its partials in closed form. Autograd of the forms
+    there squares mu, in mu^(a-2) and in delta's own derivative, and that
+    overflows at mu = 1e-220, where the mean gradient at y = mu is exactly 0.
+    In mu and y they are -mu^(a-1) delta and (y^(a-1) - mu^(a-1))/(a-1), the
+    latter through expm1 where |ln(y/mu)| <= 1; in a, each form's own, the
+    series' through dc from _near_coefs. The c and dc it is given carry no
+    gradient: the a partial is total. With create_graph the partials are
+    formed from tracked ops, so second derivatives are exact too."""
+
+    @staticmethod
+    def forward(ctx, a, c, dc, mu, y):
+        ctx.save_for_backward(a, c, dc, mu, y)
+        return _half_deviance(a, c, mu, y)
+
+    @staticmethod
+    def backward(ctx, grad):
+        a, c, dc, mu, y = ctx.saved_tensors
+        near, mid, delta = _deviance_lanes(mu, y)
+        x = torch.log1p(delta)
+        m1 = torch.pow(mu, a - 1)
+        d_y = torch.where(near | mid, m1 * torch.expm1((a - 1) * x),
+                          torch.pow(y, a - 1) - m1) / (a - 1)
+        d_a = None
+        if ctx.needs_input_grad[0]:
+            ma, ya, log_mu = torch.pow(mu, a), torch.pow(y, a), torch.log(mu)
+            dn = torch.where(near, delta, 0.0)
+            near_a = ma * dn * dn * (log_mu * _horner(c, dn) + _horner(dc, dn))
+            e, den = torch.expm1(a * x), a * (a - 1)
+            num = e - a * delta
+            mid_a = (log_mu * ma * num / den
+                     + ma * ((x * (e + 1) - delta) * den - num * (2 * a - 1)) / (den * den))
+            far = ya / a - y * m1
+            far_a = ((ya * torch.log(y) / a - ya / (a * a) - y * m1 * log_mu) / (a - 1)
+                     - far / ((a - 1) * (a - 1)) + ma * log_mu / a - ma / (a * a))
+            d_a = (grad * torch.where(near, near_a, torch.where(mid, mid_a, far_a))).sum()
+        # exact in every lane, so from delta itself rather than the masked one
+        return d_a, None, None, grad * (-m1 * ((y - mu) / mu)), grad * d_y
+
+
+class _Over(torch.autograd.Function):
+    """h / phi, its phi-derivative formed as -(h/phi)/phi. Autograd's own rule
+    squares phi first, which underflows at phi = 1e-200 and turns a zero
+    deviance into a nan dispersion gradient."""
+
+    @staticmethod
+    def forward(ctx, h, phi):
+        ctx.save_for_backward(h, phi)
+        return h / phi
+
+    @staticmethod
+    def backward(ctx, grad):
+        h, phi = ctx.saved_tensors
+        return grad / phi, -(grad * (h / phi)) / phi
 
 
 def _log_w(rho, z1, u1, coefs, z):
-    """ln Phi(rho, 0; z) for rho in the box and z > 0, given _split at rho."""
+    """ln Phi(rho, 0; z) for rho in the box and z > 0, given _rho_terms at
+    rho."""
     # pow keeps Z to an ulp where exp((ln rho + ln z)/(1+rho)) would carry
     # eps |ln z|; z^e cannot overflow for e < 1
     e = 1 / (1 + rho)
@@ -148,27 +257,46 @@ def _log_w(rho, z1, u1, coefs, z):
     return torch.where(inner, log_w_inner, log_w_tail)
 
 
+def _own(lanes, *xs):
+    """The arguments in these lanes and 1 in the others."""
+    return [torch.where(lanes, x, 1.0) for x in xs]
+
+
 def _log_density(p_terms, mu, phi, y):
-    """(ln f(y), lambda) for mu, phi, y > 0 and p_terms from _p_terms, less
-    in_box."""
-    p, rho, a, pm1, z1, u1, coefs = p_terms
-    lam = torch.pow(mu, a) / (phi * a)
-    big_z = torch.pow(y, a) / (phi * a * pm1)
-    inner = big_z <= z1
-    # inner: the density as defined, ln W on u = ln z. Tail lanes run it at
-    # y = mu and the series at the split, where nothing overflows
-    y_inner = torch.where(inner, y, mu)
-    log_theta = torch.log(phi * pm1) + pm1 * torch.log(mu)
-    u = torch.log(lam) + rho * (torch.log(y_inner) - log_theta)
-    log_f_inner = (-lam - torch.exp(torch.log(y_inner) - log_theta)
-                   - torch.log(y_inner)
-                   + _LogSeries.apply(rho, torch.where(inner, u, u1)))
-    # tail: the saddlepoint form plus the tabulated correction
-    zt = torch.where(inner, z1, big_z)
-    log_f_tail = (-_half_deviance(a, mu, y) / phi
-                  - 0.5 * (torch.log(phi) + p * torch.log(y)) - _HALF_LOG_2PI
-                  + cheb(2 * (z1 / zt) - 1, coefs) / zt)
-    return torch.where(inner, log_f_inner, log_f_tail), lam
+    """ln f(y) for y > 0 and ln P(Y = 0) = -lambda at y = 0, for mu, phi > 0,
+    y >= 0 and p_terms from _p_terms, less in_box.
+
+    Each form sees its own lanes' arguments and 1 in the others: a form's
+    partials meet a zero cotangent where it is not selected, so one inf among
+    them is a nan gradient (at phi = 1e-200, lambda / phi alone overflows).
+    The positive lanes share -d/(2 phi)."""
+    p, rho, a, pm1, log_pm1, log_a, z1, coefs, c, dc = p_terms
+    pos = y > 0
+    mu0, phi0 = _own(~pos, mu, phi)
+    log_f_zero = -torch.pow(mu0, a) / (phi0 * a)
+    mu_p, phi_p, y_p = _own(pos, mu, phi, y)
+    neg_half_dev = -_Over.apply(_HalfDeviance.apply(a, c, dc, mu_p, y_p), phi_p)
+    big_z = torch.pow(y_p, a) / (phi_p * a * pm1)
+    inner = pos & (big_z <= z1)
+    outer = pos & ~inner
+    # inner: the density as defined, ln W on u = ln z. mu enters only through
+    # -lambda - y/theta = -d/(2 phi) + y^a / (a (a-1) phi), so the mean
+    # gradient is the deviance's exact (y - mu) / (phi mu^p). Formed as
+    # -lambda and -y/theta, their mu-derivatives cancel only to rounding at
+    # y = mu, ~1e286 at mu = 1e-300. Likewise z = y^rho / (a (p-1)^rho
+    # phi^(1+rho)) holds no mu.
+    phi_i, y_i = _own(inner, phi, y)
+    log_y = torch.log(y_i)
+    u = rho * (log_y - log_pm1) - (1 + rho) * torch.log(phi_i) - log_a
+    log_f_inner = (neg_half_dev + _Over.apply(torch.pow(y_i, a) / (a * (a - 1)), phi_i)
+                   - log_y + _LogSeries.apply(rho, u))
+    # outer: the saddlepoint form plus the tabulated correction T/Z, with
+    # 1/Z built from phi directly rather than as a reciprocal of Z ~ 1/phi
+    phi_t, y_t = _own(outer, phi, y)
+    w = torch.where(outer, phi_t * a * pm1 / torch.pow(y_t, a), 1 / z1)
+    log_f_tail = (neg_half_dev - 0.5 * (torch.log(phi_t) + p * torch.log(y_t))
+                  - _HALF_LOG_2PI + cheb(2 * (z1 * w) - 1, coefs) * w)
+    return torch.where(inner, log_f_inner, torch.where(outer, log_f_tail, log_f_zero))
 
 
 def log_wright_bessel0(rho, z):
@@ -233,13 +361,8 @@ def tweedie_logpdf(p, mu, phi, y):
     p = scalar(p, work, dev, "tweedie_logpdf", "p", P_LO, P_HI)
     in_box, *p_terms = _p_terms(p, work, dev)
     valid = (mu > 0) & (phi > 0) & (y >= 0)
-    positive = valid & (y > 0)
-    # stand-ins for the lanes the result masks, so no branch sees them
-    one = torch.ones_like(y)
-    mu_s = torch.where(valid, mu, one)
-    log_f, lam = _log_density(p_terms, mu_s, torch.where(valid, phi, one),
-                              torch.where(positive, y, mu_s))
-    log_f = torch.where(positive, log_f, -lam)
+    # stand-ins for the lanes the result masks, so no form sees them
+    log_f = _log_density(p_terms, *_own(valid, mu, phi, y))
     log_f = torch.where(valid, log_f, math.nan)
     return torch.where(in_box, log_f, math.nan).to(out)
 

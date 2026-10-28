@@ -85,3 +85,22 @@ def tweedie_grad(p, mu, phi, y, i):
     """d/d(argument i) of the log-density, by mpmath's own differentiation."""
     args = list(map(mp.mpf, (p, mu, phi, y)))
     return mp.diff(lambda v: tweedie_logpdf(*(args[:i] + [v] + args[i + 1:])), args[i])
+
+
+def tweedie_logpdf_p15(mu, phi, y):
+    """ln f at p = 1.5 from Phi(1, 0; z) = sqrt(z) I1(2 sqrt(z)), 30 digits
+    above the working precision: on concentrated data the density's large
+    terms cancel, and there they reach 1e16. chebax's test_tweedie.py uses
+    the same."""
+    with mp.extradps(30):
+        mu, phi, y = map(mp.mpf, (mu, phi, y))
+        lam = 2 * mp.sqrt(mu) / phi
+        y_theta = 2 * y / (phi * mp.sqrt(mu))
+        z = lam * y_theta
+        return -lam - y_theta - mp.log(y) + mp.log(mp.sqrt(z) * mp.besseli(1, 2 * mp.sqrt(z)))
+
+
+def tweedie_grad_p15(mu, phi, y, i):
+    """d/d(argument i of mu, phi, y) of tweedie_logpdf_p15."""
+    args = list(map(mp.mpf, (mu, phi, y)))
+    return mp.diff(lambda v: tweedie_logpdf_p15(*(args[:i] + [v] + args[i + 1:])), args[i])
