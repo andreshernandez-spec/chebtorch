@@ -28,30 +28,29 @@ p = 1.2, 1.5, 1.8 (float64, per observation).
 FINDINGS (2026-10-28, RTX 3080 Laptop, torch 2.13; results/tweedie_gpu.txt)
 -----------------------------------------------------------------------------
 - Eager, chebtorch still costs mostly per call. With a tensor p, float32 is
-  3.5 ms for values and 13 ms with gradients at N = 2^12, 5.2 / 17 ms at
-  2^16 and 18 / 29 ms at 2^20, from 431 CUDA kernels, 1341 with gradients
-  (659 / 1569 at 2^20, where the series takes its lanes 2^16 at a time).
+  3.8 ms for values and 11 ms with gradients at N = 2^12, 5.7 / 21 ms at
+  2^16 and 20 / 32 ms at 2^20, from 510 CUDA kernels, 1466 with gradients
+  (738 / 1694 at 2^20, where the series takes its lanes 2^16 at a time).
 - With a python p, which keeps what depends on p alone between calls and has
-  no d/dp: 1.6 / 4.4 ms at 2^12, 2.7 / 6.5 at 2^16 and 16 / 24 at 2^20, from
-  211 and 525 kernels (439 / 753 at 2^20). The kernel loss is 0.1-0.2 ms for
-  values and 1-1.2 ms with gradients.
-- Peak memory of an eager call is under 80 MB up to 2^16; at 2^20 it is 107
-  MB for values and 292 MB with gradients in float32 (264 with a python p),
-  211 / 580 MB in float64 (524).
-- Compiled, float32: 0.1-0.35 ms for values and 0.8-1.6 ms with gradients up
-  to N = 2^16 with a tensor p, 0.1-0.2 / 0.6-0.8 ms with a python p (kernel
-  loss 0.07 / 0.3-0.6 ms); at 2^20, 1.1 / 3.4 and 1.5 / 1.9 ms. Cold compiles
-  take 8-21 s for values; with gradients, 42-71 s with a tensor p and 14-15 s
-  with a python p, which has no d/dp. Sub-millisecond numbers move by ~30%
-  between runs.
+  no d/dp: 2.7 / 5.1 ms at 2^12, 2.6 / 5.8 at 2^16 and 17 / 24 at 2^20, from
+  279 and 552 kernels (507 / 780 at 2^20). The kernel loss is 0.1-0.2 ms for
+  values and 0.8-1.4 ms with gradients. Single eager runs move by ~30%.
+- Peak memory of an eager call is under 81 MB up to 2^16; at 2^20 it is 128
+  MB for values and 301 MB with gradients in float32 (273 with a python p),
+  252 / 597 MB in float64 (541).
+- Compiled, float32: 0.14-0.38 ms for values and 1.1-1.6 ms with gradients up
+  to N = 2^16 with a tensor p, 0.15-0.25 / 0.35-0.49 ms with a python p
+  (kernel loss 0.07-0.09 / 0.33-0.34 ms); at 2^20, 1.3 / 5.1 and 1.3 / 1.8
+  ms. Cold compiles take 7-17 s for values; with gradients, 43-65 s with a
+  tensor p and 13-19 s with a python p, which has no d/dp. Sub-millisecond
+  numbers move by ~30% between runs.
 - Compiled float64 is slow where the series is a single pass over the lanes:
-  13 ms for values at 2^16 with a tensor p, against 6 eager. Profiling shows
-  inductor fusing the whole density into the series' reduction over the 64
-  terms; from 2^17 the passes keep it out (27 ms at 2^20). A python p is 4.8
-  ms there but slower at 2^20, 71 ms for values and 129 with gradients against
-  27 and 69; under compile nothing is kept, so this is the graph itself (not
-  investigated). Values at 2^12 came out at 1 ms in some cold compiles and
-  9.5-15 ms in others, for either kind of p. This GPU runs float64 at 1:64.
+  8.0 ms for values at 2^16 with a tensor p and 6.8 with a python p, against
+  6.6 and 3.8 eager. Profiling (2026-10-26) showed inductor fusing the whole
+  density into the series' reduction over the 64 terms; from 2^17 the passes
+  keep it out (37 and 35 ms at 2^20, against 54 and 51 eager). In an earlier
+  run values at 2^12 came out at 1 ms in some cold compiles and 9.5-15 ms in
+  others. This GPU runs float64 at 1:64.
 - The saddlepoint log-density is above the exact one by 0.08 to 0.11 per
   observation on average (p = 1.2, 1.5, 1.8). Its errors above 1 are all at
   small y (up to 9.4, at y <= 0.29), 0.07% to 0.9% of the draws; at y = 0 it

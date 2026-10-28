@@ -2,52 +2,52 @@ NVIDIA GeForce RTX 3080 Laptop GPU, torch 2.13.0+cu130, 2026-10-28
 ms per call, median of 15, p = 1.5; +grad = values and d/dp (but with a python p), d/dphi, d/dmu (per element)
 
 float32, N = 2^12                  eager    +grad   compiled    +grad
-  kernel (neuralforecast)          0.09     1.17       0.07     0.30
-  saddle                           0.30     1.67       0.07     0.37
-  chebtorch                        3.54    12.54       0.13     0.80   (compile 12 s, 42 s with grad)
-  chebtorch, python p              1.64     4.36       0.12     0.59   (compile 12 s, 15 s with grad)
-  chebtorch, eager:           431 / 1341 CUDA kernels, peak 2.3 / 2.4 MB
-  chebtorch, python p, eager: 211 / 525 CUDA kernels, peak 2.3 / 2.4 MB
+  kernel (neuralforecast)          0.09     0.84       0.07     0.34
+  saddle                           0.38     1.53       0.06     0.36
+  chebtorch                        3.81    10.84       0.14     1.15   (compile 11 s, 43 s with grad)
+  chebtorch, python p              2.70     5.09       0.15     0.49   (compile 8 s, 13 s with grad)
+  chebtorch, eager:           510 / 1466 CUDA kernels, peak 2.4 / 2.6 MB
+  chebtorch, python p, eager: 279 / 552 CUDA kernels, peak 2.3 / 2.5 MB
 
 float32, N = 2^16                  eager    +grad   compiled    +grad
-  kernel (neuralforecast)          0.14     0.95       0.07     0.61
-  saddle                           0.43     2.09       0.07     0.42
-  chebtorch                        5.21    16.81       0.34     1.64   (compile 11 s, 57 s with grad)
-  chebtorch, python p              2.66     6.50       0.20     0.81   (compile 8 s, 14 s with grad)
-  chebtorch, eager:           431 / 1341 CUDA kernels, peak 36.2 / 38.5 MB
-  chebtorch, python p, eager: 211 / 525 CUDA kernels, peak 36.2 / 37.7 MB
+  kernel (neuralforecast)          0.17     1.42       0.09     0.33
+  saddle                           0.38     2.27       0.09     0.26
+  chebtorch                        5.67    20.80       0.38     1.55   (compile 11 s, 55 s with grad)
+  chebtorch, python p              2.61     5.80       0.25     0.35   (compile 7 s, 13 s with grad)
+  chebtorch, eager:           510 / 1466 CUDA kernels, peak 37.5 / 40.4 MB
+  chebtorch, python p, eager: 279 / 552 CUDA kernels, peak 37.5 / 39.3 MB
 
 float32, N = 2^20                  eager    +grad   compiled    +grad
-  kernel (neuralforecast)          0.20     1.19       0.07     0.37
-  saddle                           0.60     2.37       0.12     0.35
-  chebtorch                       17.82    29.13       1.09     3.39   (compile 21 s, 71 s with grad)
-  chebtorch, python p             15.81    23.85       1.53     1.88   (compile 15 s, 15 s with grad)
-  chebtorch, eager:           659 / 1569 CUDA kernels, peak 106.8 / 292.0 MB
-  chebtorch, python p, eager: 439 / 753 CUDA kernels, peak 106.8 / 264.0 MB
+  kernel (neuralforecast)          0.20     1.21       0.08     0.40
+  saddle                           0.60     2.34       0.11     0.39
+  chebtorch                       19.72    32.34       1.27     5.12   (compile 17 s, 65 s with grad)
+  chebtorch, python p             17.20    24.12       1.29     1.83   (compile 11 s, 19 s with grad)
+  chebtorch, eager:           738 / 1694 CUDA kernels, peak 127.8 / 301.0 MB
+  chebtorch, python p, eager: 507 / 780 CUDA kernels, peak 127.8 / 273.0 MB
 
 float64, N = 2^12                  eager    +grad   compiled    +grad
-  kernel (neuralforecast)          0.15     1.02       0.32     0.93
-  saddle                           0.39     2.20       0.60     1.67
-  chebtorch                        4.62    16.20       1.06     3.54   (compile 12 s, 37 s with grad)
-  chebtorch, python p              2.78     7.75       9.56     2.85   (compile 12 s, 13 s with grad)
-  chebtorch, eager:           431 / 1341 CUDA kernels, peak 4.5 / 4.8 MB
-  chebtorch, python p, eager: 211 / 525 CUDA kernels, peak 4.5 / 4.7 MB
+  kernel (neuralforecast)          0.15     0.97       0.30     0.91
+  saddle                           0.26     1.55       0.59     1.67
+  chebtorch                        5.26    18.40       1.76     2.39   (compile 11 s, 33 s with grad)
+  chebtorch, python p              3.24     5.88       0.73     1.88   (compile 8 s, 13 s with grad)
+  chebtorch, eager:           510 / 1466 CUDA kernels, peak 4.7 / 5.1 MB
+  chebtorch, python p, eager: 279 / 552 CUDA kernels, peak 4.7 / 4.9 MB
 
 float64, N = 2^16                  eager    +grad   compiled    +grad
-  kernel (neuralforecast)          0.26     2.13       0.63     1.92
-  saddle                           0.47     2.73       1.20     3.29
-  chebtorch                        5.98    19.07      13.31    18.56   (compile 12 s, 49 s with grad)
-  chebtorch, python p              3.38     6.85       4.77    16.71   (compile 11 s, 17 s with grad)
-  chebtorch, eager:           431 / 1341 CUDA kernels, peak 72.2 / 76.7 MB
-  chebtorch, python p, eager: 211 / 525 CUDA kernels, peak 72.2 / 75.2 MB
+  kernel (neuralforecast)          0.18     0.94       0.59     1.85
+  saddle                           0.38     1.73       1.20     3.26
+  chebtorch                        6.64    17.36       7.97    13.11   (compile 10 s, 43 s with grad)
+  chebtorch, python p              3.82     5.52       6.82    10.75   (compile 8 s, 14 s with grad)
+  chebtorch, eager:           510 / 1466 CUDA kernels, peak 74.8 / 80.4 MB
+  chebtorch, python p, eager: 279 / 552 CUDA kernels, peak 74.8 / 78.3 MB
 
 float64, N = 2^20                  eager    +grad   compiled    +grad
-  kernel (neuralforecast)          1.62     5.08       1.63     5.07
-  saddle                           3.74     9.39       3.55     9.09
-  chebtorch                       49.06    75.11      26.74    69.19   (compile 47 s, 83 s with grad)
-  chebtorch, python p             47.21    66.70      70.62   129.27   (compile 39 s, 52 s with grad)
-  chebtorch, eager:           659 / 1569 CUDA kernels, peak 210.5 / 580.0 MB
-  chebtorch, python p, eager: 439 / 753 CUDA kernels, peak 210.5 / 524.0 MB
+  kernel (neuralforecast)          1.62     5.09       1.60     5.05
+  saddle                           3.73     9.30       3.31     9.57
+  chebtorch                       53.99    83.68      36.75    82.47   (compile 39 s, 82 s with grad)
+  chebtorch, python p             50.73    67.68      34.82    68.20   (compile 27 s, 34 s with grad)
+  chebtorch, eager:           738 / 1694 CUDA kernels, peak 251.5 / 597.0 MB
+  chebtorch, python p, eager: 507 / 780 CUDA kernels, peak 251.5 / 541.0 MB
 
 saddle - exact log-density per observation, float64, N = 2^20
   p = 1.2: zeros 0.113, mean +0.0819, max |.| 9.36 (y > 0), 0 at y = 0
