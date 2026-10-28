@@ -17,9 +17,10 @@ _EXPORTS = {
     "Tweedie": "tweedie",
     "log_wright_bessel0": "tweedie",
     "tweedie_logpdf": "tweedie",
+    "tweedie_logpdf_fixed_p": "tweedie",
 }
 
-__all__ = ["Tweedie", "log_wright_bessel0", "tweedie_logpdf"]
+__all__ = ["Tweedie", "log_wright_bessel0", "tweedie_logpdf", "tweedie_logpdf_fixed_p"]
 assert sorted(__all__) == sorted(_EXPORTS)
 
 

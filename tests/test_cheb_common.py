@@ -107,3 +107,17 @@ def test_memo_results_are_complete_on_other_streams():
         out = memo(1.2345678, torch.float64, dev)[0] * 1
     torch.cuda.synchronize()
     assert out.item() == 2 * 1.2345678
+
+
+def test_memo_raw_passes_the_number():
+    # for terms whose sizes depend on the value itself
+    seen = []
+
+    def terms(v, dtype, device):
+        seen.append(v)
+        return (torch.arange(int(v * 2), dtype=dtype, device=device),)
+
+    memo = Memo(terms, raw=True)
+    kept = memo(1.5, torch.float64, CPU)
+    assert memo(1.5, torch.float64, CPU) is kept and seen == [1.5]
+    assert kept[0].tolist() == [0.0, 1.0, 2.0]

@@ -19,6 +19,8 @@ each eager and under torch.compile (static shapes, one compile per N):
 - chebtorch, python p: the same with p a python number, the way a model with
   a fixed power calls it. What depends on p alone is kept between calls, and
   there is no d/dp.
+- chebtorch, fixed p: tweedie_logpdf_fixed_p at the same python p, the call
+  restricted to derivatives in mu and phi.
 
 Also: chebtorch's compile time (first call less a steady one), the CUDA
 kernels one eager chebtorch call launches and the peak memory it allocates,
@@ -28,29 +30,36 @@ p = 1.2, 1.5, 1.8 (float64, per observation).
 FINDINGS (2026-10-28, RTX 3080 Laptop, torch 2.13; results/tweedie_gpu.txt)
 -----------------------------------------------------------------------------
 - Eager, chebtorch still costs mostly per call. With a tensor p, float32 is
-  3.8 ms for values and 11 ms with gradients at N = 2^12, 5.7 / 21 ms at
-  2^16 and 20 / 32 ms at 2^20, from 510 CUDA kernels, 1466 with gradients
+  5.0 ms for values and 16 ms with gradients at N = 2^12, 6.1 / 19 ms at
+  2^16 and 20 / 33 ms at 2^20, from 510 CUDA kernels, 1466 with gradients
   (738 / 1694 at 2^20, where the series takes its lanes 2^16 at a time).
-- With a python p, which keeps what depends on p alone between calls and has
-  no d/dp: 2.7 / 5.1 ms at 2^12, 2.6 / 5.8 at 2^16 and 17 / 24 at 2^20, from
-  279 and 552 kernels (507 / 780 at 2^20). The kernel loss is 0.1-0.2 ms for
-  values and 0.8-1.4 ms with gradients. Single eager runs move by ~30%.
+  With a python p, which keeps what depends on p alone and has no d/dp: 2.1
+  / 5.0 ms at 2^12, 4.5 / 9.3 at 2^16 and 17 / 24 at 2^20, from 279 and 552
+  kernels (507 / 780 at 2^20). Single eager runs move by ~30%.
+- tweedie_logpdf_fixed_p at that python p: 0.77 / 1.35 ms at 2^12, 0.99 /
+  1.86 at 2^16 and 5.1 / 6.8 at 2^20, from 81 and 110 kernels (154 / 210 at
+  2^20). With gradients that is the saddle's time up to 2^16 (1.23 / 2.36
+  ms, which also takes d/dp) and 2.9 times it at 2^20; for values alone it
+  is 2.4-8 times the saddle. The kernel loss is 0.1-0.2 ms for values and
+  0.7-1.4 ms with gradients.
 - Peak memory of an eager call is under 81 MB up to 2^16; at 2^20 it is 128
-  MB for values and 301 MB with gradients in float32 (273 with a python p),
-  252 / 597 MB in float64 (541).
-- Compiled, float32: 0.14-0.38 ms for values and 1.1-1.6 ms with gradients up
-  to N = 2^16 with a tensor p, 0.15-0.25 / 0.35-0.49 ms with a python p
-  (kernel loss 0.07-0.09 / 0.33-0.34 ms); at 2^20, 1.3 / 5.1 and 1.3 / 1.8
-  ms. Cold compiles take 7-17 s for values; with gradients, 43-65 s with a
-  tensor p and 13-19 s with a python p, which has no d/dp. Sub-millisecond
-  numbers move by ~30% between runs.
+  MB for values and 301 MB with gradients in float32 (273 with a python p,
+  136 for tweedie_logpdf_fixed_p), 252 / 597 MB in float64 (541; 236).
+- Compiled, float32, up to N = 2^16: 0.13-0.29 ms for values and 1.0-1.7
+  ms with gradients with a tensor p, 0.12-0.23 / 0.58-0.61 ms with a python
+  p, 0.11-0.20 / 0.37-0.50 ms for tweedie_logpdf_fixed_p (kernel loss
+  0.06-0.07 / 0.28-0.38 ms); at 2^20, 1.3 / 5.3, 1.3 / 1.9 and 1.7 / 2.6 ms.
+  Cold compiles take 5-18 s for values; with gradients, 43-66 s with a
+  tensor p, 11-19 s with a python p and 7-8 s for tweedie_logpdf_fixed_p.
+  Sub-millisecond numbers move by ~30% between runs.
 - Compiled float64 is slow where the series is a single pass over the lanes:
-  8.0 ms for values at 2^16 with a tensor p and 6.8 with a python p, against
-  6.6 and 3.8 eager. Profiling (2026-10-26) showed inductor fusing the whole
-  density into the series' reduction over the 64 terms; from 2^17 the passes
-  keep it out (37 and 35 ms at 2^20, against 54 and 51 eager). In an earlier
-  run values at 2^12 came out at 1 ms in some cold compiles and 9.5-15 ms in
-  others. This GPU runs float64 at 1:64.
+  8.1 ms for values at 2^16 with a tensor p, 6.9 with a python p and 6.1 for
+  tweedie_logpdf_fixed_p, against 6.9, 4.1 and 3.2 eager. Profiling
+  (2026-10-26) showed inductor fusing the whole density into the series'
+  reduction over the 64 terms. From 2^17 the passes keep it out of the
+  first two (37 and 35 ms at 2^20, against 53 and 51 eager), but
+  tweedie_logpdf_fixed_p takes its lanes in one pass under compile (89 ms
+  at 2^20 against 43 eager). This GPU runs float64 at 1:64.
 - The saddlepoint log-density is above the exact one by 0.08 to 0.11 per
   observation on average (p = 1.2, 1.5, 1.8). Its errors above 1 are all at
   small y (up to 9.4, at y <= 0.29), 0.07% to 0.9% of the draws; at y = 0 it
@@ -67,7 +76,7 @@ per observation, and what it does to a fitted p is a separate question.
 Times are medians of single synchronized calls, so they include launch
 overhead, which is most of the eager chebtorch time.
 
-Run:  python benchmarks/tweedie_gpu.py   (~12 min, most of it compiling)
+Run:  python benchmarks/tweedie_gpu.py   (~15 min, most of it compiling)
 """
 
 import atexit
@@ -126,8 +135,13 @@ def exact_nll_python_p(p, mu, phi, y):
     return -chebtorch.tweedie_logpdf(P_TIMED, mu, phi, y).mean()
 
 
+def exact_nll_fixed_p(p, mu, phi, y):
+    return -chebtorch.tweedie_logpdf_fixed_p(P_TIMED, mu, phi, y).mean()
+
+
 LOSSES = {"kernel (neuralforecast)": kernel_nll, "saddle": saddle_nll,
-          "chebtorch": exact_nll, "chebtorch, python p": exact_nll_python_p}
+          "chebtorch": exact_nll, "chebtorch, python p": exact_nll_python_p,
+          "chebtorch, fixed p": exact_nll_fixed_p}
 COMPILED = {name: torch.compile(fn, dynamic=False) for name, fn in LOSSES.items()}
 # one compile per (N, dtype, grad mode) and loss: 12, over the default limit of 8
 for _k in ("recompile_limit", "cache_size_limit"):
@@ -213,7 +227,7 @@ def main():
                     line += (f"   (compile {comp[2] / 1e3:.0f} s, "
                              f"{comp[3] / 1e3:.0f} s with grad)")
                 print(line)
-            for name in ("chebtorch", "chebtorch, python p"):
+            for name in ("chebtorch", "chebtorch, python p", "chebtorch, fixed p"):
                 fn = LOSSES[name]
                 k = [kernels(fn, args, grad) for grad in (False, True)]
                 m = [peak_mb(fn, args, grad) for grad in (False, True)]

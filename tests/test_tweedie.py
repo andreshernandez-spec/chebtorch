@@ -35,6 +35,14 @@ float32   ln W 5.6e-7, d/dz 1.7e-6, d/drho 4.4e-6 (z within float32's range),
 Concentrated data (small phi, saddle scale Z from 4e3 to 4e15, at p = 1.5
 against a closed form): float64 density 2.7e-16, gradients 3.0e-16; float32
 1.3e-7 and 1.6e-7.
+
+tweedie_logpdf_fixed_p, same metrics, d/dln mu and d/dln phi only:
+float64   density 8.2e-13, d/dln mu 3.7e-16, d/dln phi 6.0e-12.
+float32               density  d/dln mu  d/dln phi
+          p < 1.1     4.0e-4   1.4e-7    4.0e-3
+          p < 1.3     2.6e-5   1.8e-7    5.7e-5
+          p >= 1.3    1.8e-6   1.8e-7    6.1e-6
+          Concentrated data: float64 2.7e-16, float32 2.4e-7.
 """
 
 import decimal
@@ -50,7 +58,7 @@ import torch
 
 from chebtorch.cheb_common import cheb
 from chebtorch.tweedie import (A1, P_HI, P_LO, Tweedie, _HalfDeviance, _near_coefs, _split,
-                               log_wright_bessel0, tweedie_logpdf)
+                               log_wright_bessel0, tweedie_logpdf, tweedie_logpdf_fixed_p)
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "tweedie.json"
 FX = json.loads(FIXTURES.read_text())
@@ -63,6 +71,10 @@ BAR_F32 = ((1.1, 1.6e-3, (8e-2, 6.5e-7, 2.1e-2, 1.5e-2)),
            (1.3, 9e-5, (2e-3, 7e-7, 3e-4, 1.8e-4)),
            (2.0, 6e-6, (3e-4, 7e-7, 1.4e-5, 8.5e-6)))
 BAR_CONCENTRATED = {torch.float64: (1.2e-15, 1.2e-15), torch.float32: (5e-7, 6.5e-7)}
+# tweedie_logpdf_fixed_p: (density, d/dln mu, d/dln phi); float32 by band of p
+BAR_FIXED_F64 = (3.5e-12, 1.6e-15, 2.4e-11)
+BAR_FIXED_F32 = ((1.1, 1.6e-3, 6e-7, 1.6e-2), (1.3, 1.1e-4, 7e-7, 2.3e-4),
+                 (2.0, 7e-6, 7e-7, 2.5e-5))
 ARGS = ("p", "mu", "phi", "y")
 
 
@@ -343,11 +355,28 @@ def test_torch_compile_matches_eager():
     y = _t([0.0, 0.05, 1.3, 4.0, 300.0])
     # one graph: python numbers must not break it, as an .item() would
     # (fullgraph=True does not catch that one, it only warns)
-    explained = torch._dynamo.explain(tweedie_logpdf)(1.37, 2.0, 0.8, y)
-    assert explained.graph_break_count == 0
-    eager = tweedie_logpdf(1.37, 2.0, 0.8, y)
-    compiled = torch.compile(tweedie_logpdf)(1.37, 2.0, 0.8, y)
-    torch.testing.assert_close(compiled, eager, rtol=0, atol=1e-14)
+    for fn in (tweedie_logpdf, tweedie_logpdf_fixed_p):
+        assert torch._dynamo.explain(fn)(1.37, 2.0, 0.8, y).graph_break_count == 0
+        eager = fn(1.37, 2.0, 0.8, y)
+        compiled = torch.compile(fn)(1.37, 2.0, 0.8, y)
+        torch.testing.assert_close(compiled, eager, rtol=0, atol=1e-14)
+
+
+@pytest.mark.skipif(torch.__version__ < (2, 5), reason="torch 2.4's AOT autograd "
+                    "partitioner takes minutes on these graphs (over 150 s at 2.4.1)")
+def test_torch_compile_gradients_match_eager():
+    # with gradients: the restricted call's autograd.Function, the full call's
+    # through every op
+    y = _t([0.0, 0.05, 1.3, 4.0, 300.0])
+    mu = torch.full_like(y, 2.0, requires_grad=True)
+    for fn in (tweedie_logpdf, tweedie_logpdf_fixed_p):
+        def loss(mu):
+            return fn(1.37, mu, 0.8, y).sum()
+
+        assert torch._dynamo.explain(loss)(mu).graph_break_count == 0
+        eager = torch.autograd.grad(loss(mu), mu)[0]
+        compiled = torch.autograd.grad(torch.compile(loss)(mu), mu)[0]
+        torch.testing.assert_close(compiled, eager, rtol=0, atol=1e-13)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
@@ -359,10 +388,12 @@ def test_python_numbers_do_not_wait_for_the_gpu():
     y = torch.tensor([0.0, 0.3, 2.0, 40.0], device="cuda")
     mu = torch.full_like(y, 2.0, requires_grad=True)
     tweedie_logpdf(1.4, mu, 0.8, y)
+    tweedie_logpdf_fixed_p(1.4, mu, 0.8, y)
     log_wright_bessel0(1.0, y + 1)
     torch.cuda.set_sync_debug_mode("error")
     try:
         tweedie_logpdf(1.4, mu, 0.8, y).sum().backward()
+        tweedie_logpdf_fixed_p(1.4, mu, 0.8, y).sum().backward()
         tweedie_logpdf(1.4, 2.0, 0.8, y)
         log_wright_bessel0(1.0, y + 1)
         Tweedie(mu, 0.8, 1.4, validate_args=False).log_prob(y)
@@ -511,3 +542,97 @@ def test_mean_gradient_is_exact_at_extreme_scales(device):
                 assert g[1] == math.copysign(math.inf, ref), (p, mu, phi, y, g[1])
             else:
                 assert abs(dec(g[1]) - ref) <= dec(1.1e-15) * abs(ref), (p, mu, phi, y, g[1])
+
+
+def _eval_fixed_p(xs, dtype, device):
+    """tweedie_logpdf_fixed_p at xs = (p, mu, phi, y) in dtype: the value,
+    mu d/dmu and phi d/dphi, checked finite first."""
+    p, mu, phi, y = xs
+    args = [torch.tensor(x, dtype=dtype, device=device, requires_grad=True) for x in (mu, phi)]
+    v = tweedie_logpdf_fixed_p(p, *args, torch.tensor(y, dtype=dtype, device=device))
+    v.backward()
+    out = [v.item(), mu * args[0].grad.item(), phi * args[1].grad.item()]
+    assert all(map(math.isfinite, out)), (xs, dtype, out)
+    return out
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_fixed_p_float64(device):
+    worst = [0.0] * 3
+    for c in FX["tweedie_logpdf"]:
+        got = _eval_fixed_p([c[k] for k in ARGS], torch.float64, device)
+        worst[0] = max(worst[0], _rel(got[0], c["value"]))
+        if "grad" in c:
+            for i in (1, 2):
+                worst[i] = max(worst[i], _rel(got[i], c[ARGS[i]] * c["grad"][i]))
+    assert all(w <= b for w, b in zip(worst, BAR_FIXED_F64)), worst
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_fixed_p_float32(device):
+    for lo, (hi, *bars) in zip((1.0, 1.1, 1.3), BAR_FIXED_F32):
+        worst = [0.0] * 3
+        for c in FX["tweedie_logpdf"]:
+            if not lo <= c["p"] < hi:
+                continue
+            xs = [_to32(k, c[k]) for k in ARGS]
+            got, ref = (_eval_fixed_p(xs, dtype, device) for dtype in (torch.float32, torch.float64))
+            worst = [max(w, _rel(a, b)) for w, a, b in zip(worst, got, ref)]
+        assert all(w <= b for w, b in zip(worst, bars)), (lo, worst)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_fixed_p_concentrated(device):
+    # float64 against the closed form, float32 against float64 at its inputs
+    for dtype, bar in ((torch.float64, 1.2e-15), (torch.float32, 1e-6)):
+        worst = 0.0
+        for c in FX["concentrated"]:
+            xs = [1.5] + [_to32(k, c[k]) if dtype == torch.float32 else c[k]
+                          for k in ("mu", "phi", "y")]
+            if dtype == torch.float64:
+                ref = [c["value"], c["mu"] * c["grad"][0], c["phi"] * c["grad"][1]]
+            else:
+                ref = _eval_fixed_p(xs, torch.float64, device)
+            got = _eval_fixed_p(xs, dtype, device)
+            worst = max([worst] + [_rel(a, b) for a, b in zip(got, ref)])
+        assert worst <= bar, (dtype, worst)
+
+
+def test_fixed_p_partials_match_finite_differences():
+    # the partials are derived by hand, per form: y = 0, below the split,
+    # above it near the mean (2.0004 at phi = 0.01) and away from it
+    y = _t([0.0, 0.05, 1.3, 4.0, 30.0, 2.0004, 9.0])
+    phi0 = _t([0.8, 0.8, 0.8, 0.8, 0.8, 0.01, 0.05])
+    for p in (1.06, 1.37, 1.9):
+        mu = _t([2.0] * 7).requires_grad_(True)
+        phi = phi0.clone().requires_grad_(True)
+        assert torch.autograd.gradcheck(lambda m, f: tweedie_logpdf_fixed_p(p, m, f, y), (mu, phi))
+
+
+def test_fixed_p_restrictions():
+    y = _t([0.0, 0.5, 3.0])
+    mu = _t([1.0, 1.0, 1.0]).requires_grad_(True)
+    with pytest.raises(TypeError, match="python number"):
+        tweedie_logpdf_fixed_p(_t(1.5), mu, 0.8, y)
+    with pytest.raises(ValueError, match="covers p"):
+        tweedie_logpdf_fixed_p(1.02, mu, 0.8, y)
+    with pytest.raises(ValueError, match="no derivative in y"):
+        tweedie_logpdf_fixed_p(1.5, mu, 0.8, y.clone().requires_grad_(True))
+    with pytest.raises(RuntimeError, match="no second derivatives"):
+        torch.autograd.grad(tweedie_logpdf_fixed_p(1.5, mu, 0.8, y).sum(), mu, create_graph=True)
+    # invalid arguments give nan, and the y = 0 mass is tweedie_logpdf's
+    got = tweedie_logpdf_fixed_p(1.5, _t([0.0, 1.0, 1.0, 1.0]), _t([1.0, -1.0, 1.0, 1.0]),
+                                 _t([1.0, 1.0, -0.5, 0.0]))
+    assert torch.isnan(got[:3]).all()
+    assert got[3].item() == pytest.approx(tweedie_logpdf(1.5, 1.0, 1.0, _t(0.0)).item(), rel=1e-15)
+
+
+def test_fixed_p_matches_tweedie_logpdf():
+    # the same values, broadcasting and dtype rules as tweedie_logpdf
+    mu = _t([0.5, 1.0, 2.0, 4.0])
+    y = _t([[0.0], [0.3], [9.0]])
+    got = tweedie_logpdf_fixed_p(1.6, mu, 0.8, y)
+    torch.testing.assert_close(got, tweedie_logpdf(1.6, mu, 0.8, y), rtol=0, atol=4e-12)
+    half = tweedie_logpdf_fixed_p(1.6, mu.half(), 0.8, y.half())
+    assert half.dtype == torch.float16
+    torch.testing.assert_close(half.double(), got, rtol=2e-3, atol=2e-3)
