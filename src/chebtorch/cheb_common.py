@@ -3,8 +3,8 @@
 # From chebtorch: https://github.com/andreshernandez-spec/chebtorch
 """Helpers every chebtorch family imports: Clenshaw evaluation, the table
 cache, dtype and device resolution, tensors from arguments without a host
-sync, and the check for parameters that are uniform per call. Imports only
-torch.
+sync, the check for parameters that are uniform per call, and the cache of
+what depends on such a parameter alone. Imports only torch.
 
 Chebyshev coefficients follow numpy.polynomial: plain c[0], lowest degree
 first, the coordinate mapped to [-1, 1] by the caller. The names here carry no
@@ -16,6 +16,8 @@ which is specific enough not to clash with the project's own modules.
 """
 
 import torch
+
+_KEEP = 64                       # values of a parameter a Memo keeps
 
 
 def cheb(x, c):
@@ -84,14 +86,55 @@ def tensor_of(v, dtype, device):
 
 
 def scalar(v, dtype, device, who, name, lo, hi):
-    """A uniform-per-call parameter as a 0-d tensor. A python number is
-    checked against the box here; a tensor is not (it may be traced) and
-    gives nan downstream when out of the box."""
+    """A uniform-per-call parameter: a python number checked against the box
+    and returned as a float (Memo keys on it), or a one-element tensor as a
+    0-d tensor in dtype on device. A tensor is not checked (it may be
+    traced) and gives nan downstream when out of the box."""
     if not isinstance(v, torch.Tensor):
         if not lo <= float(v) <= hi:
             raise ValueError(f"{who} covers {name} in [{lo}, {hi}], got {v}")
-        return tensor_of(float(v), dtype, device)
+        return float(v)
     if v.numel() != 1:
         raise ValueError(f"{who} takes {name} as a scalar (uniform per call), "
                          f"got shape {tuple(v.shape)}")
     return v.reshape(()).to(dtype=dtype, device=device)
+
+
+class Memo:
+    """fn of a uniform-per-call parameter, kept per (value, dtype, device)
+    when the parameter is a python number: what depends on it alone then
+    costs a dict lookup on later calls, not fn's kernels. Called as
+    memo(v, dtype, device) with v from scalar(); fn gets v as a 0-d tensor.
+    A tensor v runs fn every time, as do calls under torch.compile, which
+    puts that work in the graph, and calls a CUDA graph captures.
+
+    Keeping a result waits for the GPU once, so the result is complete before
+    another stream reads it, and builds it outside inference mode, like
+    Tables. Nothing kept is dropped, since a captured CUDA graph may still
+    read it; past _KEEP values fn runs every time."""
+
+    def __init__(self, fn):
+        self._fn, self._kept = fn, {}
+
+    def __call__(self, v, dtype, device):
+        if isinstance(v, torch.Tensor) or torch.compiler.is_compiling():
+            return self._fn(tensor_of(v, dtype, device))
+        key = (v, dtype, device)
+        out = self._kept.get(key)
+        if out is None:
+            if len(self._kept) >= _KEEP or _capturing(device):
+                return self._fn(tensor_of(v, dtype, device))
+            with torch.inference_mode(False):
+                out = self._fn(tensor_of(v, dtype, device))
+            if device.type == "cuda":
+                torch.cuda.current_stream(device).synchronize()
+            self._kept[key] = out
+        return out
+
+
+def _capturing(device):
+    """Whether a CUDA graph is capturing device's current stream."""
+    if device.type != "cuda":
+        return False
+    with torch.cuda.device(device):
+        return torch.cuda.is_current_stream_capturing()

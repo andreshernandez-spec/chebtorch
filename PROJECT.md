@@ -137,7 +137,11 @@ DATA = {"TABLE_TAIL": (0.98969..., ...)}
 ### 4.2 dtype, device, errors
 
 - Computes in the input's dtype: float64 or float32. float16 and bfloat16 go through
-  float32 and come back. Tables are cached per (dtype, device) on first use.
+  float32 and come back. Tables are cached per (dtype, device) on first use, and
+  what depends on a python-number parameter alone (`cheb_common.Memo`) per
+  (value, dtype, device): its first call waits for the GPU once, later calls
+  skip that work. A tensor parameter, which may change or carry a gradient,
+  recomputes it on every call.
 - No host syncs: no `.item()`, no Python branching on tensor values, and python
   numbers are filled in on the device rather than copied from the host (a
   blocking copy waits for all queued GPU work), so it runs asynchronously on GPU
