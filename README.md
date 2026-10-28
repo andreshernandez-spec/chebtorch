@@ -22,7 +22,7 @@ d.log_prob(torch.tensor([0.0, 1.0, 3.0])), d.sample((5,))
 
 | family | functions | box | float64 accuracy |
 |---|---|---|---|
-| Tweedie | `tweedie_logpdf(p, mu, phi, y)`, `Tweedie(mu, phi, power)`, `log_wright_bessel0(rho, z)` | p in [1.05, 1.95], uniform per call | density 7.6e-13, d/dp 5.8e-11, ln W 7.3e-16 |
+| Tweedie | `tweedie_logpdf(p, mu, phi, y)`, `Tweedie(mu, phi, power)`, `log_wright_bessel0(rho, z)` | p in [1.05, 1.95], uniform per call | density 7.6e-13, d/dp 4.3e-11, ln W 7.3e-16 |
 
 Accuracy is the measured worst case against mpmath at 40 digits,
 |err| / max(1, |ref|). Each family's test file records its floors and bars,

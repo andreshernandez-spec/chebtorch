@@ -2,34 +2,40 @@ NVIDIA GeForce RTX 3080 Laptop GPU, torch 2.13.0+cu130, 2026-10-26
 ms per call, median of 15, p = 1.5; +grad = values and d/dp, d/dphi, d/dmu (per element)
 
 float32, N = 2^12                  eager    +grad   compiled    +grad
-  kernel (neuralforecast)          0.10     0.85       0.07     0.29
-  saddle                           0.27     1.42       0.08     0.33
-  chebtorch                        9.75    20.00       0.30     1.65   (compile 23 s, 60 s with grad)
+  kernel (neuralforecast)          0.08     0.73       0.06     0.34
+  saddle                           0.28     1.61       0.07     0.33
+  chebtorch                        3.36    12.30       0.09     0.73   (compile 11 s, 38 s with grad)
+                              eager: 433 / 1343 CUDA kernels, peak 2.3 / 2.4 MB
 
 float32, N = 2^16                  eager    +grad   compiled    +grad
-  kernel (neuralforecast)          0.15     1.07       0.09     0.46
-  saddle                           0.37     1.50       0.08     0.51
-  chebtorch                       11.89    23.95       0.50     1.30   (compile 32 s, 104 s with grad)
+  kernel (neuralforecast)          0.14     0.93       0.09     0.28
+  saddle                           0.29     1.61       0.07     0.27
+  chebtorch                        5.38    13.72       0.35     1.08   (compile 11 s, 58 s with grad)
+                              eager: 433 / 1343 CUDA kernels, peak 36.2 / 38.5 MB
 
 float32, N = 2^20                  eager    +grad   compiled    +grad
-  kernel (neuralforecast)          0.20     1.15       0.07     0.36
-  saddle                           0.60     2.35       0.10     0.37
-  chebtorch                       28.21    40.04       4.98     8.55   (compile 35 s, 124 s with grad)
+  kernel (neuralforecast)          0.20     1.25       0.09     0.27
+  saddle                           0.60     2.34       0.11     0.37
+  chebtorch                       17.97    28.81       1.08     3.31   (compile 20 s, 64 s with grad)
+                              eager: 661 / 1571 CUDA kernels, peak 106.8 / 292.0 MB
 
 float64, N = 2^12                  eager    +grad   compiled    +grad
-  kernel (neuralforecast)          0.13     1.10       0.32     1.10
-  saddle                           0.58     2.68       0.64     1.73
-  chebtorch                       11.21    24.07       3.24     7.39   (compile 32 s, 70 s with grad)
+  kernel (neuralforecast)          0.15     1.12       0.31     0.93
+  saddle                           0.37     2.25       0.60     1.70
+  chebtorch                        4.93    16.40       1.06     3.63   (compile 11 s, 35 s with grad)
+                              eager: 433 / 1343 CUDA kernels, peak 4.5 / 4.8 MB
 
 float64, N = 2^16                  eager    +grad   compiled    +grad
-  kernel (neuralforecast)          0.18     1.10       0.59     1.85
-  saddle                           0.39     2.21       1.22     3.36
-  chebtorch                       12.08    40.66       3.20    15.16   (compile 37 s, 106 s with grad)
+  kernel (neuralforecast)          0.18     0.88       0.58     1.87
+  saddle                           0.40     2.16       1.22     3.25
+  chebtorch                        5.29    14.12      13.06    19.68   (compile 12 s, 48 s with grad)
+                              eager: 433 / 1343 CUDA kernels, peak 72.2 / 76.7 MB
 
 float64, N = 2^20                  eager    +grad   compiled    +grad
-  kernel (neuralforecast)          1.62     5.10       1.65     5.44
-  saddle                           3.74     9.46       3.39     9.97
-  chebtorch                       61.77    88.45      27.93    90.20   (compile 45 s, 136 s with grad)
+  kernel (neuralforecast)          1.62     5.09       1.63     5.07
+  saddle                           3.74     9.33       3.33     9.56
+  chebtorch                       48.71    73.81      26.49    71.40   (compile 45 s, 84 s with grad)
+                              eager: 661 / 1571 CUDA kernels, peak 210.5 / 580.0 MB
 
 saddle - exact log-density per observation, float64, N = 2^20
   p = 1.2: zeros 0.113, mean +0.0819, max |.| 9.36 (y > 0), 0 at y = 0
