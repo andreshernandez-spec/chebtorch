@@ -114,21 +114,29 @@ class Memo:
     Keeping a result waits for the GPU once, so the result is complete before
     another stream reads it, and builds it outside inference mode, like
     Tables. Nothing kept is dropped, since a captured CUDA graph may still
-    read it; past _KEEP values fn runs every time."""
+    read it; past _KEEP values fn runs every time.
 
-    def __init__(self, fn):
-        self._fn, self._kept = fn, {}
+    With raw=True fn gets (v, dtype, device), v the python number itself, for
+    terms whose sizes depend on its value; the caller then passes no tensor."""
+
+    def __init__(self, fn, raw=False):
+        self._fn, self._raw, self._kept = fn, raw, {}
+
+    def _run(self, v, dtype, device):
+        if self._raw:
+            return self._fn(v, dtype, device)
+        return self._fn(tensor_of(v, dtype, device))
 
     def __call__(self, v, dtype, device):
         if isinstance(v, torch.Tensor) or torch.compiler.is_compiling():
-            return self._fn(tensor_of(v, dtype, device))
+            return self._run(v, dtype, device)
         key = (v, dtype, device)
         out = self._kept.get(key)
         if out is None:
             if len(self._kept) >= _KEEP or _capturing(device):
-                return self._fn(tensor_of(v, dtype, device))
+                return self._run(v, dtype, device)
             with torch.inference_mode(False):
-                out = self._fn(tensor_of(v, dtype, device))
+                out = self._run(v, dtype, device)
             if device.type == "cuda":
                 torch.cuda.current_stream(device).synchronize()
             self._kept[key] = out

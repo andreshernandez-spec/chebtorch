@@ -133,6 +133,11 @@ DATA = {"TABLE_TAIL": (0.98969..., ...)}
   `tweedie_logpdf`, `log_wright_bessel0`, `vonmises_cdf`). Open question 1.
 - A `torch.distributions.Distribution` subclass in the same file where a family
   defines a distribution (Tweedie; later Gamma/Beta/StudentT with cdf and icdf).
+- Where a common use needs less than the general call, a second call restricted
+  to it, with the same values within the same floors: `tweedie_logpdf_fixed_p`
+  fits mu and phi at a python-number power (first derivatives in mu and phi
+  only), cutting each series to the terms the dtype resolves at that power and
+  forming the partials in closed form in the forward pass.
 
 ### 4.2 dtype, device, errors
 

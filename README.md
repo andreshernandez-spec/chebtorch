@@ -19,13 +19,16 @@ d.log_prob(torch.tensor([0.0, 1.0, 3.0])), d.sample((5,))
 ```
 
 A power that is not learned is cheaper as a python number, as in `Tweedie`
-above: what depends on it alone is computed at its first call and kept.
+above: what depends on it alone is computed at its first call and kept. For
+fitting a mean and a dispersion at such a power, `tweedie_logpdf_fixed_p`
+gives the same values with derivatives in mu and phi only, for a third to a
+quarter of the work per call.
 
 ## What's in
 
 | family | functions | box | float64 accuracy |
 |---|---|---|---|
-| Tweedie | `tweedie_logpdf(p, mu, phi, y)`, `Tweedie(mu, phi, power)`, `log_wright_bessel0(rho, z)` | p in [1.05, 1.95], uniform per call | density 9.9e-13, d/dp 6.1e-11, d/dln mu 4.0e-16, ln W 7.3e-16 |
+| Tweedie | `tweedie_logpdf(p, mu, phi, y)`, `tweedie_logpdf_fixed_p(p, mu, phi, y)`, `Tweedie(mu, phi, power)`, `log_wright_bessel0(rho, z)` | p in [1.05, 1.95], uniform per call | density 9.9e-13, d/dp 6.1e-11, d/dln mu 4.0e-16, ln W 7.3e-16 |
 
 Accuracy is the measured worst case against mpmath at 40 digits,
 |err| / max(1, |ref|). Each family's test file records its floors and bars,
