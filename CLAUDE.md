@@ -14,6 +14,15 @@ mpmath generators, `fit`, and the byte-for-byte regeneration checks live in
 chebax, which is the source of truth for every coefficient. A table change starts
 in chebax and reaches chebtorch only through `tools/export.py`.
 
+The same holds for the rest of what a function computes: regions and splits,
+formulas, references, test points (PROJECT.md section 6). Make such a change in
+chebax first and port it. If it has to land here first, the same PR adds it to
+`docs/divergences.md`, and a chebax PR follows with the change, its test points
+and its floors measured again; close the entry when that merges. How code runs
+in torch (eager kernel count, caches, host syncs, autograd.Function) is decided
+here and needs no entry. A PR description that changes what is computed says
+whether it is ported from chebax, first here, or staying here.
+
 ## The vendoring contract (PROJECT.md section 3); tests/test_contract.py enforces it
 
 - A family is its module `src/chebtorch/<family>.py`, its generated tables

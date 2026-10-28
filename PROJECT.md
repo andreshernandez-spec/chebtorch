@@ -189,8 +189,8 @@ measured worthwhile.
   table modules, writes each family's data module with its provenance, and writes
   fixtures. It is the only code that imports chebax.
 - Fixtures (`tests/fixtures/<family>.json`): mpmath references at 40 dps for values
-  and gradients, generated with chebax's own reference helpers, so chebtorch's CI
-  needs neither mpmath nor jax.
+  and gradients, from copies of chebax's test references (`tools/references.py`),
+  so chebtorch's CI needs neither mpmath nor jax.
 - CI on every push (CPU, torch floor and latest, float64 and float32): fixtures to
   the bars, data hashes, the import rules, the copy test, torch.compile smoke test.
 - Parity job (weekly or manual): install chebax and jax, compare chebtorch with
@@ -201,11 +201,40 @@ measured worthwhile.
 - GPU speed is measured by hand (laptop or RunPod), as in chebax; claims cite the
   benchmark script and its date.
 
-## 6. Repository layout
+## 6. chebax first
+
+chebtorch is a port. What a function computes is decided in chebax; how it runs
+in torch is decided here.
+
+- **Decided in chebax:** the tables and their generators, the regions and where
+  they split, the formula each region evaluates, the references, and the points
+  the tests check. A table changes here only through `tools/export.py`.
+- **Decided here:** what torch needs and JAX does not. The kernel count in eager
+  mode, caches for python-number parameters, no host syncs, backward passes as
+  `torch.autograd.Function` where chebax uses `custom_jvp`, compile behaviour,
+  `torch.distributions` classes. Floors are measured in each library: torch's
+  lgamma, pow and exp are not XLA's.
+- **A change to what is computed goes to chebax first,** with its tests and
+  floors there, and reaches chebtorch by export or by porting.
+- **When it cannot wait,** because the port or a torch user found it (a bug, a
+  better formula, a region the tests miss), it may land here first. The same PR
+  adds it to `docs/divergences.md`, and a chebax PR follows with the change, the
+  test points that found it, and its floors measured again. The entry closes
+  when that PR is merged and chebtorch's code, tests and parity notes no longer
+  describe a difference.
+- **A difference meant to stay,** a torch-only choice that changes what is
+  computed, is listed in the same file with the reason, so the next port knows
+  it was deliberate.
+- A chebtorch PR that changes what is computed says which it is: ported from
+  chebax (the commit), first here (the entry and the chebax PR), or staying
+  here (why).
+
+## 7. Repository layout
 
 ```
 PROJECT.md, CLAUDE.md, README.md, LICENSE (BSD-3)
 docs/coding-style.md    the review standard, adapted from chebax's
+docs/divergences.md     where chebtorch computes something chebax does not (section 6)
 pyproject.toml          pure python, requires torch only
 src/chebtorch/
     __init__.py         lazy re-exports (PEP 562), so `import chebtorch` loads no tables
@@ -220,7 +249,7 @@ tests/                  fixtures, contract (copy) test, per-family tests
 benchmarks/             GPU scripts; results checked in, dated
 ```
 
-## 7. Milestones
+## 8. Milestones
 
 | ID | Milestone | Acceptance |
 |---|---|---|
@@ -234,18 +263,18 @@ benchmarks/             GPU scripts; results checked in, dated
 
 PyPI release after M1 is Andres's action, as for chebax.
 
-## 8. Risks
+## 9. Risks
 
 | risk | mitigation |
 |---|---|
 | Reviewers balk at a table of literals they cannot check | provenance block, hash test, fixtures they can run, small files |
-| chebtorch drifts from chebax | export is the only path for tables; weekly parity job against chebax main; chebax commit in every data module |
+| chebtorch drifts from chebax | export is the only path for tables; changes to what is computed go to chebax first, and the few that land here first are listed in docs/divergences.md until chebax has them (section 6); weekly parity job against chebax main; chebax commit in every data module |
 | Copies go stale downstream | the header names the source and release; chebtorch keeps a changelog per family |
 | torch.compile graph breaks from custom Functions | `torch.library.custom_op` (M2); eager stays correct meanwhile |
 | Consumers need per-element shape parameters | section 4.4, measured before offering |
 | Two runtimes to maintain | inference only, no generator code in chebtorch; scope by demand |
 
-## 9. Open questions
+## 10. Open questions
 
 1. Function names: scipy's where they exist (proposed), or chebax's throughout.
 2. float32 tables for copies (half the size, same accuracy at f32) or float64 only.
