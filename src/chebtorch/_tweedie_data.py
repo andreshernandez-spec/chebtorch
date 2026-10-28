@@ -7,10 +7,10 @@ tests/test_contract.py checks DATA against its sha256.
 """
 
 PROVENANCE = {
-    'chebax': 'v0.3.0-21-g45ff338',
-    'chebax_commit': '45ff3385e644067c6ba44fbcda4bfd9f9191f823',
+    'chebax': 'v0.3.0-48-g8018289',
+    'chebax_commit': '8018289c6a98dc4feca61458685cfb074b12ea8e',
     'table_module': 'chebax._src.recipes.tweedie_table',
-    'generator_sha256': '8b8388699b0e0802',
+    'generator_sha256': 'af36e5a7e8ae53f3',
     'mpmath': '1.4.1',
     'dps': 40,
     'data_sha256': 'c9c2c7316c0552aa387f4321f3be811b95d6d4c2478b3bdffda2f8a69d636526',
