@@ -40,9 +40,12 @@ class Tables:
         key = (name, dtype, device)
         t = self._cache.get(key)
         if t is None:
-            t = torch.tensor(self._data[name], dtype=torch.float64)
-            t = t.reshape(self._shapes[name])
-            t = self._cache[key] = t.to(dtype=dtype, device=device)
+            # the first call may come from an inference_mode block, and
+            # autograd cannot save inference tensors in later calls
+            with torch.inference_mode(False):
+                t = torch.tensor(self._data[name], dtype=torch.float64)
+                t = t.reshape(self._shapes[name]).to(dtype=dtype, device=device)
+            self._cache[key] = t
         return t
 
 

@@ -32,7 +32,10 @@ float32   ln W 5.6e-7, d/dz 1.7e-6, d/drho 4.4e-6 (z within float32's range),
 
 import json
 import math
+import os
 import pathlib
+import subprocess
+import sys
 
 import pytest
 import torch
@@ -332,3 +335,31 @@ def test_python_numbers_do_not_wait_for_the_gpu():
         Tweedie(mu, 0.8, 1.4, validate_args=False).log_prob(y)
     finally:
         torch.cuda.set_sync_debug_mode(0)
+
+
+INFERENCE_FIRST = r"""
+import torch
+from chebtorch import log_wright_bessel0, tweedie_logpdf
+
+for dev in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):
+    y = torch.tensor([0.0, 0.3, 2.0, 40.0], device=dev)
+    with torch.inference_mode():            # builds the tables
+        tweedie_logpdf(torch.tensor(1.4, device=dev), 2.0, 0.8, y)
+        tweedie_logpdf(1.4, 2.0, 0.8, y)
+        log_wright_bessel0(1.0, y + 1)
+    p = torch.tensor(1.4, device=dev, requires_grad=True)
+    mu = torch.full_like(y, 2.0, requires_grad=True)
+    tweedie_logpdf(p, mu, 0.8, y).sum().backward()
+    tweedie_logpdf(1.4, mu, 0.8, y).sum().backward()
+    log_wright_bessel0(p, y + 1).sum().backward()
+"""
+
+
+def test_a_first_call_in_inference_mode_leaves_gradients_working():
+    # autograd cannot save inference tensors, so nothing cached may be one;
+    # a fresh process, since this suite has filled the caches already. env
+    # is os.environ: conda's numpy sets MKL_THREADING_LAYER in the C
+    # environment only, and a child importing torch first refuses it
+    out = subprocess.run([sys.executable, "-c", INFERENCE_FIRST],
+                         capture_output=True, text=True, env=dict(os.environ))
+    assert out.returncode == 0, out.stderr[-2000:]
