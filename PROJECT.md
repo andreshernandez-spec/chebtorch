@@ -157,14 +157,16 @@ DATA = {"TABLE_TAIL": (0.98969..., ...)}
   only correct one: the Tweedie direct sum (one-pass weighted derivatives, O(N)
   memory), and the inverse CDFs (implicit function theorem; never differentiate the
   fixed-iteration solver).
-- Measured (`benchmarks/tweedie_gpu.py`, 2026-10-26, RTX 3080 Laptop, float32):
-  with the series as one (lanes, 64) tensor, eager is 3.4-5.4 ms for values
-  and 12-14 ms with gradients up to N = 2^16 (433 and 1343 CUDA kernels per
-  call, from 1282 and 2284), against 0.1 / 0.7-0.9 ms for neuralforecast's
-  kernel-only loss; compiled, 0.1-0.35 / 0.7-1.1 ms, after 11-64 s of cold
-  compile per shape. A training loop that does not compile pays the eager
-  cost every step; the two unrolled Chebyshev sums (63 and 31 steps) are what
-  to shrink next. Compiled float64 is slow while the series is one pass over
+- Measured (`benchmarks/tweedie_gpu.py`, 2026-10-28, RTX 3080 Laptop, float32):
+  eager is 3.5-5.2 ms for values and 13-17 ms with gradients up to N = 2^16
+  with a tensor p (431 and 1341 CUDA kernels per call), and 1.6-2.7 / 4.4-6.5
+  ms with a python p, whose terms are kept (211 and 525 kernels, gradients in
+  mu and phi), against 0.1 / 1 ms for neuralforecast's kernel-only loss;
+  compiled, 0.1-0.35 / 0.6-1.6 ms, after 8-71 s of cold compile per shape. A
+  training loop that does not compile pays the eager cost every step. With a
+  python p the tail's 31-step Chebyshev sum over the lanes is what to shrink
+  next; with a tensor p, also the 63-step sum for the tail's coefficients and
+  its backward. Compiled float64 is slow while the series is one pass over
   the lanes (13 ms at 2^16): inductor fuses the whole density into its
   reduction. `torch.library.custom_op` with registered autograd is M2.
 
