@@ -177,10 +177,13 @@ def _half_deviance(a, c, mu, y):
     float32 at (p, mu, phi, y) = (1.5, 1e6, 1e-12, 1e6 + 1/8).
     mid: mu^a (expm1(a x) - a delta) / (a (a-1)) with x = log1p(delta). Its
     first-order cancellation costs about 9 eps / (1 - a) at |delta| = 1/4.
+    Below the mean chebax takes x = log(y/mu), since XLA's float64 log1p is
+    up to 128 ulp off there. torch's is within an ulp, and x from delta lets
+    their roundings cancel in expm1(a x) - a delta (docs/divergences.md).
     far: y^a / (a (a-1)) - y mu^(a-1) / (a-1) + mu^a / a. Its terms are
     O(1/(a (1-a))) and cancel to O(delta^2), which costs 32 eps / (a (1-a))
     at |delta| = 1/4 (670 eps at the box edges) but only ~50 eps beyond
-    |ln(y/mu)| = 1, where it takes over. chebax uses it from |delta| = 1/4."""
+    |ln(y/mu)| = 1, where it takes over."""
     near, mid, delta = _deviance_lanes(mu, y)
     ma = torch.pow(mu, a)
     dn = torch.where(near, delta, 0.0)

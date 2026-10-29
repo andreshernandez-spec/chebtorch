@@ -9,12 +9,13 @@ by sum max(1, |d/dp|), since chebtorch returns only the sum for a scalar p.
 Skipped unless chebax and jax import; CI's weekly parity job installs chebax
 from main.
 
-Measured worst difference (2026-10-28, chebax main at 53034de on jax 0.11, torch 2.13,
-CPU; bars about 4x): density 6.8e-13, d/dp 5.1e-16, d/dln mu 5.6e-16,
-d/dln phi 7.7e-12, d/dln y 7.2e-12; ln W 7.1e-15, d/dz 1.1e-14, d/drho 5.1e-16.
-Both take the mean gradient from the deviance's closed form. chebtorch keeps
-an expm1 form of the deviance for 1/4 < |y/mu - 1| and |ln(y/mu)| <= 1, where
-chebax uses its far form; the difference there is below the density's floor.
+Measured worst difference (2026-10-29, chebax main at a17f1bf on jax 0.11, torch 2.13,
+CPU; bars about 4x): density 8.0e-13, d/dp 5.6e-16, d/dln mu 4.5e-16,
+d/dln phi 8.5e-12, d/dln y 7.3e-12; ln W 7.1e-15, d/dz 1.1e-14, d/drho 5.1e-16.
+Both take the mean gradient from the deviance's closed form. Below the mean,
+the deviance's middle form takes ln(y/mu) as log1p(delta) here and as
+log(y/mu) in chebax (docs/divergences.md); the difference there is below the
+density's floor.
 """
 
 import numpy as np

@@ -309,6 +309,43 @@ def test_closed_form_partials_match_finite_differences():
         assert torch.autograd.gradgradcheck(tweedie_logpdf, args)
 
 
+@pytest.mark.parametrize("device", DEVICES)
+def test_half_deviance_by_form(device):
+    # chebax's test_half_deviance_against_mpmath, the same draws, reference
+    # in decimal at 50 digits: d/2 and its y-partial in each form, relative
+    # error. The density's tests cannot see a form's error under the direct
+    # sum's. Measured worst (value, y-partial), CPU and GPU: near 4.2e-16,
+    # 8.1e-16; mid 4.3e-14 (a = 0.95), 8.1e-16; far 1.4e-14, 3.2e-15.
+    np = pytest.importorskip("numpy")
+    decimal.getcontext().prec = 50
+    dec = decimal.Decimal
+    bars = {"near": (1.6e-15, 3.2e-15), "mid": (1.7e-13, 3.2e-15), "far": (5.6e-14, 1.3e-14)}
+    worst = {lane: [0.0, 0.0] for lane in bars}
+    rng = np.random.default_rng(3)
+    for a in (0.05, 0.5, 0.95):
+        at = _t(a).to(device)
+        c, dc = _near_coefs(at)
+        s = dec(a)
+        for lane, lo, hi in (("near", -0.25, 0.25), ("mid", math.exp(-1) - 1, -0.25),
+                             ("mid", 0.25, math.e - 1), ("far", -0.999, math.exp(-1) - 1),
+                             ("far", math.e - 1, 50.0)):
+            mu = np.exp(rng.uniform(-10, 10, 400))
+            y = mu * (1 + rng.uniform(lo, hi, 400))
+            yt = torch.tensor(y, device=device, requires_grad=True)
+            h = _HalfDeviance.apply(at, c, dc, torch.tensor(mu, device=device), yt)
+            h_y, = torch.autograd.grad(h.sum(), yt)
+            for m, v, hv, gv in zip(mu.tolist(), y.tolist(), h.tolist(), h_y.tolist()):
+                m, v = dec(m), dec(v)
+                d = (v - m) / m
+                ref = m**s * ((1 + d) ** s - 1 - s * d) / (s * (s - 1))
+                ref_y = (v ** (s - 1) - m ** (s - 1)) / (s - 1)
+                w = worst[lane]
+                w[0] = max(w[0], float(abs(dec(hv) - ref) / abs(ref)))
+                w[1] = max(w[1], float(abs(dec(gv) - ref_y) / abs(ref_y)))
+    for lane, (bar_h, bar_y) in bars.items():
+        assert worst[lane][0] <= bar_h and worst[lane][1] <= bar_y, (lane, worst)
+
+
 def test_normalizes_with_its_moments():
     # P(0) + int f = 1, E Y = mu, Var Y = phi mu^p: the whole density at once,
     # integrated in v = ln y (near 0 the density is ~ y^(rho - 1))
