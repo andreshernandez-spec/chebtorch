@@ -1,16 +1,6 @@
-"""Write chebtorch's generated table modules and fixtures from chebax.
-
-    python tools/export.py                 # every family's _<family>_data.py
-    python tools/export.py --fixtures      # also the mpmath fixtures (~1 min)
-
-This is the only code in chebtorch that imports chebax (and so jax) or mpmath,
-and only inside the functions below: tests import `data_sha256` from here
-without either. For each family it writes src/chebtorch/_<family>_data.py, a
-module of literals: PROVENANCE (chebax describe and commit, the table module,
-its generator hash, mpmath version and dps from its META, the sha256 of the
-data), the scalar constants, SHAPES and DATA, float64 values as repr, which
-round-trips exactly. With --fixtures it also computes the mpmath references in
-tests/fixtures/.
+"""Write each family's _<family>_data.py from chebax (python tools/export.py),
+and with --fixtures the mpmath fixtures (~1 min). Only this file imports chebax,
+jax or mpmath, inside functions, so tests can import data_sha256 without them.
 """
 
 import argparse
@@ -60,14 +50,12 @@ def chebax_provenance(table_mod):
         return subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
                               text=True, check=True).stdout.strip()
 
-    # the last commit that changed the table, so later chebax commits that
-    # leave it alone do not move the provenance
+    # the last commit that changed the table, so unrelated commits keep the provenance
     commit = git("log", "-1", "--format=%H", "--", str(rel))
     dirty = git("status", "--porcelain", "--", str(rel))
     meta = table_mod.META
     return {
-        # describe, not the package version: a checkout past a tag still
-        # reports the tag's version, whose release may predate the table
+        # describe, not the version: past a tag, the version may predate the table
         "chebax": git("describe", "--tags", "--always", commit),
         "chebax_commit": commit + ("-dirty" if dirty else ""),
         "table_module": table_mod.__name__,
@@ -133,9 +121,7 @@ def tweedie_fixtures():
              if y == 0 or y ** (2 - p) / (phi * (2 - p) * (p - 1)) <= 1e5]
     graded = {c for c in cases
               if c[3] in (0.0, 0.05, 3.0, 150.0) and c[1] in (1.0, 50.0, 3.0)}
-    # just below the split at small p, where the density and its gradients
-    # are worst: lgamma(rho n) reaches ~4000 there (found by comparing with
-    # chebax on random inputs; the grid above misses it)
+    # just below the split at small p, where errors peak and the grid misses
     for p in (1.05, 1.06, 1.08, 1.15):
         rho = (2 - p) / (p - 1)
         z1 = tt.ZA + tt.S1 * (1 + rho) ** 2
@@ -143,9 +129,7 @@ def tweedie_fixtures():
             for frac in (0.5, 0.8, 0.9, 0.97):
                 y = (frac * z1 * phi * (2 - p) * (p - 1)) ** (1 / (2 - p))
                 graded |= {(p, y * r, phi, y) for r in (0.6, 1.2, 1.6)}
-    # the worst errors are rounding spikes, which a grid samples poorly: a
-    # random sample of the same region, and the spikes tests/test_parity.py's
-    # draws found
+    # rounding spikes there: random points, and those tests/test_parity.py found
     rng = random.Random(0)                      # stdlib: the stream is stable
     for _ in range(200):
         p = rng.uniform(1.05, 1.1)
@@ -175,8 +159,7 @@ def tweedie_fixtures():
             row["grad"] = [None if i == 3 and c[3] == 0
                            else float(ref.tweedie_grad(*c, i)) for i in range(4)]
         density.append(row)
-    # concentrated data, saddle scale Z from 4e3 to 4e15 at p = 1.5, past what
-    # the series reference reaches: chebax's test_tweedie.py CONCENTRATED
+    # concentrated data, Z from 4e3 to 4e15 at p = 1.5: chebax's CONCENTRATED
     concentrated = [{"p": 1.5, "mu": mu, "phi": phi, "y": y,
                      "value": float(ref.tweedie_logpdf_p15(mu, phi, y)),
                      "grad": [float(ref.tweedie_grad_p15(mu, phi, y, i)) for i in range(3)]}

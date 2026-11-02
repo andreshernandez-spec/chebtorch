@@ -2,79 +2,29 @@
 """Tweedie negative log-likelihood on the GPU: chebtorch, eager and compiled,
 against the saddlepoint approximation and neuralforecast's kernel-only loss.
 
-WHAT THIS MEASURES
-------------------
-Time per call of the mean negative log-likelihood of N = 2^12, 2^16 and 2^20
-observations drawn from the law (mu = 2, phi = 1, p = 1.5), float32 and
-float64: values alone (under no_grad), and values with the gradients in p, phi
-and a per-element mu, the shape a network's output head has. Three losses,
-each eager and under torch.compile (static shapes, one compile per N):
+Time per call of the mean NLL of N = 2^12, 2^16 and 2^20 draws (mu = 2, phi = 1,
+p = 1.5), float32 and float64, values alone and with gradients in p, phi and a
+per-element mu. Losses: kernel, neuralforecast's -(y mu^(1-p)/(1-p) -
+mu^(2-p)/(2-p)), which has no phi or normalizing term; saddle, exact at y = 0;
+chebtorch's tweedie_logpdf with a tensor and a python p; tweedie_logpdf_fixed_p.
+Also compile time, CUDA kernels and peak memory per eager call, and the saddle's
+error per observation at p = 1.2, 1.5, 1.8.
 
-- kernel: -(y mu^(1-p)/(1-p) - mu^(2-p)/(2-p)), what neuralforecast's
-  Tweedie DistributionLoss computes. Not a density: no dispersion and no
-  normalizing term, so neither p nor phi can be learned through it.
-- saddle: the saddlepoint approximation -d(y, mu)/(2 phi) - ln(2 pi phi y^p)/2
-  for y > 0, and the exact -lambda at y = 0.
-- chebtorch: tweedie_logpdf, the exact density.
-- chebtorch, python p: the same with p a python number, the way a model with
-  a fixed power calls it. What depends on p alone is kept between calls, and
-  there is no d/dp.
-- chebtorch, fixed p: tweedie_logpdf_fixed_p at the same python p, the call
-  restricted to derivatives in mu and phi.
+Findings (2026-10-28, RTX 3080 Laptop, torch 2.13; results/tweedie_gpu.txt):
+- Eager chebtorch is launch-bound. float32 with gradients at 2^16: 19 ms with a
+  tensor p (1466 kernels), 9.3 ms with a python p, 1.9 ms for
+  tweedie_logpdf_fixed_p (110 kernels), against 2.4 ms for the saddle.
+- Compiled float32 up to 2^16, with gradients: 0.4-0.5 ms for
+  tweedie_logpdf_fixed_p, 0.3-0.4 ms for the kernel loss. Cold compiles 5-66 s.
+- Compiled float64 can lose to eager: inductor fuses the density into the
+  series' reduction (tweedie_logpdf_fixed_p 89 ms against 43 at 2^20).
+- The saddle is above the exact log-density by 0.08 to 0.11 per observation;
+  its errors above 1 are all at y <= 0.29.
+- torch.compile(dynamic=True) was slower than eager from 2^16 up, so the
+  compiles are static.
 
-Also: chebtorch's compile time (first call less a steady one), the CUDA
-kernels one eager chebtorch call launches and the peak memory it allocates,
-and how far the saddle is from the exact density on N = 2^20 draws at
-p = 1.2, 1.5, 1.8 (float64, per observation).
-
-FINDINGS (2026-10-28, RTX 3080 Laptop, torch 2.13; results/tweedie_gpu.txt)
------------------------------------------------------------------------------
-- Eager, chebtorch still costs mostly per call. With a tensor p, float32 is
-  5.0 ms for values and 16 ms with gradients at N = 2^12, 6.1 / 19 ms at
-  2^16 and 20 / 33 ms at 2^20, from 510 CUDA kernels, 1466 with gradients
-  (738 / 1694 at 2^20, where the series takes its lanes 2^16 at a time).
-  With a python p, which keeps what depends on p alone and has no d/dp: 2.1
-  / 5.0 ms at 2^12, 4.5 / 9.3 at 2^16 and 17 / 24 at 2^20, from 279 and 552
-  kernels (507 / 780 at 2^20). Single eager runs move by ~30%.
-- tweedie_logpdf_fixed_p at that python p: 0.77 / 1.35 ms at 2^12, 0.99 /
-  1.86 at 2^16 and 5.1 / 6.8 at 2^20, from 81 and 110 kernels (154 / 210 at
-  2^20). With gradients that is the saddle's time up to 2^16 (1.23 / 2.36
-  ms, which also takes d/dp) and 2.9 times it at 2^20; for values alone it
-  is 2.4-8 times the saddle. The kernel loss is 0.1-0.2 ms for values and
-  0.7-1.4 ms with gradients.
-- Peak memory of an eager call is under 81 MB up to 2^16; at 2^20 it is 128
-  MB for values and 301 MB with gradients in float32 (273 with a python p,
-  136 for tweedie_logpdf_fixed_p), 252 / 597 MB in float64 (541; 236).
-- Compiled, float32, up to N = 2^16: 0.13-0.29 ms for values and 1.0-1.7
-  ms with gradients with a tensor p, 0.12-0.23 / 0.58-0.61 ms with a python
-  p, 0.11-0.20 / 0.37-0.50 ms for tweedie_logpdf_fixed_p (kernel loss
-  0.06-0.07 / 0.28-0.38 ms); at 2^20, 1.3 / 5.3, 1.3 / 1.9 and 1.7 / 2.6 ms.
-  Cold compiles take 5-18 s for values; with gradients, 43-66 s with a
-  tensor p, 11-19 s with a python p and 7-8 s for tweedie_logpdf_fixed_p.
-  Sub-millisecond numbers move by ~30% between runs.
-- Compiled float64 is slow where the series is a single pass over the lanes:
-  8.1 ms for values at 2^16 with a tensor p, 6.9 with a python p and 6.1 for
-  tweedie_logpdf_fixed_p, against 6.9, 4.1 and 3.2 eager. Profiling
-  (2026-10-26) showed inductor fusing the whole density into the series'
-  reduction over the 64 terms. From 2^17 the passes keep it out of the
-  first two (37 and 35 ms at 2^20, against 53 and 51 eager), but
-  tweedie_logpdf_fixed_p takes its lanes in one pass under compile (89 ms
-  at 2^20 against 43 eager). This GPU runs float64 at 1:64.
-- The saddlepoint log-density is above the exact one by 0.08 to 0.11 per
-  observation on average (p = 1.2, 1.5, 1.8). Its errors above 1 are all at
-  small y (up to 9.4, at y <= 0.29), 0.07% to 0.9% of the draws; at y = 0 it
-  is exact.
-- An earlier run with torch.compile(dynamic=True) was slower than eager from
-  N = 2^16 up (the float64 kernel loss 65 ms against 1.6 ms); not
-  investigated, so the compiles here are static.
-
-WHAT IT DOES NOT ESTABLISH
---------------------------
-Anything about other GPUs (this runs on whatever cuda:0 is; consumer parts run
-float64 at 1:64), CPU speed, or training quality: the saddle's error here is
-per observation, and what it does to a fitted p is a separate question.
-Times are medians of single synchronized calls, so they include launch
-overhead, which is most of the eager chebtorch time.
+Times are medians of single synchronized calls on cuda:0, launch overhead
+included. Nothing here covers other GPUs, CPUs or training quality.
 
 Run:  python benchmarks/tweedie_gpu.py   (~15 min, most of it compiling)
 """
@@ -88,8 +38,7 @@ import statistics
 import tempfile
 import time
 
-# cold compiles on every run: inductor and triton otherwise reuse kernels that
-# an earlier run left in their on-disk caches
+# cold compiles: no kernels from an earlier run's on-disk caches
 _CACHE = tempfile.mkdtemp(prefix="chebtorch-bench-")
 atexit.register(shutil.rmtree, _CACHE, ignore_errors=True)
 os.environ["TORCHINDUCTOR_CACHE_DIR"] = _CACHE

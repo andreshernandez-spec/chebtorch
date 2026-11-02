@@ -1,46 +1,30 @@
 # Copyright (c) 2026, Andres Hernandez
 # SPDX-License-Identifier: BSD-3-Clause
 # From chebtorch: https://github.com/andreshernandez-spec/chebtorch
-"""Tweedie log-density for power 1.05 <= p <= 1.95, and Wright's
-Phi(rho, 0; z) underneath it. To use it elsewhere, copy it with
-_tweedie_data.py (its tables and their provenance) and cheb_common.py into one
-package directory. The three import only math, torch and each other.
+"""Tweedie log-density for power 1.05 <= p <= 1.95, and Wright's Phi(rho, 0; z)
+under it. To use it elsewhere, copy it with _tweedie_data.py and cheb_common.py
+into one package; the three import only math, torch and each other.
 
-Two calls give the density. tweedie_logpdf takes every argument as a tensor
-or a number, with derivatives in all of them to second order.
-tweedie_logpdf_fixed_p is for fitting mu and phi at a power that is a
-python number: first derivatives in mu and phi only, the same values within
-the same floors, and a fraction of the work per call.
-
-The compound Poisson-gamma Tweedie law with mean mu, dispersion phi and power
-p in (1, 2) puts mass exp(-lambda) at 0 and has, for y > 0,
+For p in (1, 2) the law has mass exp(-lambda) at 0 and, for y > 0,
 
     f(y) = exp(-lambda - y/theta) W(rho, z) / y,  W = Phi(rho, 0; z),
     lambda = mu^(2-p) / (phi (2-p)),  theta = phi (p-1) mu^(p-1),
     rho = (2-p)/(p-1),  z = lambda (y/theta)^rho.
 
-Two regions in Z = y^(2-p) / (phi (2-p)(p-1)), split at Z1 = 12 + 2 (1+rho)^2.
-Below it W is its own series, 64 terms summed in log space, and
--lambda - y/theta is formed as -d(y, mu)/(2 phi) + y^a / (a (a-1) phi),
-a = 2 - p, with z built without mu, so mu enters only through the unit
-deviance d and the mean gradient is its exact (y - mu) / (phi mu^p). Above
-it the density is exactly the saddlepoint approximation
--d(y, mu)/(2 phi) - ln(2 pi phi y^p)/2 plus a tabulated correction T/Z. T is
-a Chebyshev series in x = 2 Z1/Z - 1 (32 coefficients; x = -1 is Z -> inf),
-each coefficient a Chebyshev series in t = ln(rho)/ln(19) (64 coefficients);
-both coordinates span [-1, 1] over the box. d is a series in (y - mu)/mu near
-the mean (_half_deviance), so concentrated data (small phi, Z up to 1e16 and
-beyond) keeps its digits. The fixtures straddle the seam at Z1 (1 -+ 1e-9).
-chebax (chebax._src.recipes.tweedie_gen) has the measurements behind the
-split and the table.
+Split at Z1 = 12 + 2 (1+rho)^2 in Z = y^(2-p) / (phi (2-p)(p-1)). Below, W is
+its 64-term series in log space and mu enters only through the unit deviance d,
+so the mean gradient is exactly (y - mu) / (phi mu^p). Above, the density is
+the saddlepoint form -d/(2 phi) - ln(2 pi phi y^p)/2 plus T/Z, T a Chebyshev
+series in x = 2 Z1/Z - 1 whose 32 coefficients are series in t = ln(rho)/ln(19).
+chebax's tweedie_gen has the measurements behind both.
 
-Accuracy against mpmath at 40 digits, |err| / max(1, |ref|), worst cases in
-float64: ln W 7e-16, the density 1e-12, d/dp 6e-11, and 1e-11 for the
-gradients in ln phi and ln y, all at p = 1.05, where lgamma(rho n) reaches
-~4000 in the series; 4e-16 in ln mu. float32 arithmetic adds the same
-cancellation at its own eps: density 4e-4 and d/dp 2e-2 below p = 1.1,
-2.3e-5 and 5e-4 below p = 1.3, 1.5e-6 and 7e-5 above, and 2e-7 in ln mu.
-Concentrated data (Z from 4e3 to 4e15): 3e-16 in float64, 1.6e-7 in float32.
+p and rho are uniform per call: a python number (checked, its terms kept between
+calls) or a one-element tensor (nan outside the box). Results take the widest
+floating dtype given, half precision computed in float32, on the first tensor's
+device. Invalid arguments give nan. Derivatives are reverse mode only.
+
+Worst error against mpmath, |err| / max(1, |ref|): density 1e-12 in float64 and
+4e-4 in float32, both at p = 1.05; tests/test_tweedie.py has the rest.
 """
 
 import math
@@ -62,11 +46,8 @@ _tables = Tables(SHAPES, DATA)
 
 
 def _series(rho, u):
-    """ln S for S = sum_{n=1..N} exp(n u - lgamma(n+1) - lgamma(rho n)), and
-    its derivatives in u and rho, all from one pass: both are averages over
-    the same weights e_n / S. The terms are a (lanes, N) tensor, so a call
-    is a few kernels rather than a few per term. Lanes go _LANES at a time,
-    which caps the temporaries at two such tensors (64 MB in float64)."""
+    """ln sum_{n=1..N} exp(n u - lgamma(n+1) - lgamma(rho n)) and its u and rho
+    derivatives, in one pass over _LANES lanes at a time."""
     n = torch.arange(1, N_TERMS + 1, dtype=u.dtype, device=u.device)
     c = torch.lgamma(n + 1) + torch.lgamma(rho * n)
     g = n * torch.digamma(rho * n)               # -d/drho of term n's exponent
@@ -75,7 +56,7 @@ def _series(rho, u):
         t = n * uc - c
         # the shift cancels in all three results, so it needs no derivative
         m = t.detach().amax(-1, keepdim=True)
-        # in place: no backward needs t itself
+        # in place: no backward needs t
         e = t.sub_(m).exp_()
         s = e.sum(-1)
         # sums, not matmuls: under TF32 a float32 matmul rounds to 10 bits
@@ -84,10 +65,8 @@ def _series(rho, u):
 
 
 class _LogSeries(torch.autograd.Function):
-    """The series with its analytic backward. Autograd through the unrolled
-    sum would keep every term for the backward pass; this keeps two arrays.
-    With create_graph the derivatives are recomputed with tracked ops, so
-    second derivatives are exact too. No jvp, so no forward mode."""
+    """_series with an analytic backward, which keeps two arrays instead of
+    every term. Exact second derivatives with create_graph."""
 
     @staticmethod
     def forward(ctx, rho, u):
@@ -111,10 +90,8 @@ def _split(rho):
 
 
 def _near_coefs(a):
-    """c_2 .. c_27 of the binomial series of ((1+delta)^a - 1 - a delta) /
-    (a (a-1)), c_2 = 1/2 and c_{k+1} = c_k (a-k)/(k+1), and their
-    derivatives in a, c_k sum_{j=2}^{k-1} 1/(a-j). 26 terms leave under
-    3e-17 relative at |delta| = _NEAR for every a in (0, 1)."""
+    """c_2 .. c_27 of the series of ((1+delta)^a - 1 - a delta) / (a (a-1)) and
+    their derivatives in a. 26 terms leave 3e-17 at |delta| = _NEAR."""
     j = torch.arange(2, _N_NEAR + 1, dtype=a.dtype, device=a.device)
     c = 0.5 * torch.cat([torch.ones_like(a)[None], torch.cumprod((a - j) / (j + 1), 0)])
     dc = c * torch.cat([torch.zeros_like(a)[None], torch.cumsum(1 / (a - j), 0)])
@@ -123,8 +100,7 @@ def _near_coefs(a):
 
 @Memo
 def _rho_terms(rho):
-    """What depends on rho alone: whether it is in the box, then rho (1, a
-    stand-in, outside it), Z1, u = ln z at Z1 and the tail's coefficients."""
+    """in_box, then rho (1 outside the box), Z1, ln z at Z1, tail coefficients."""
     in_box = (rho >= RHO_MIN) & (rho <= RHO_MAX)
     rho = torch.where(in_box, rho, torch.ones_like(rho))
     z1, coefs = _split(rho)
@@ -134,11 +110,9 @@ def _rho_terms(rho):
 
 @Memo
 def _p_terms(p):
-    """What depends on p alone: whether it is in the box, then p (1.5, a
-    stand-in, outside it), rho, a = 2 - p, p - 1, ln(p - 1), ln a, _split at
-    rho and _near_coefs at a."""
-    # the box is checked on p as given: in float32, p = 1.05 rounds to
-    # 1.04999995, whose rho is just past RHO_MAX
+    """in_box, then p (1.5 outside the box), rho, a = 2 - p, p - 1, ln(p - 1),
+    ln a, _split(rho) and _near_coefs(a)."""
+    # check p, not rho: float32 rounds p = 1.05 to a rho just past RHO_MAX
     in_box = (p >= P_LO) & (p <= P_HI)
     p = torch.where(in_box, p, torch.full_like(p, 1.5))
     rho = (2 - p) / (p - 1)
@@ -156,9 +130,8 @@ def _horner(c, x):
 
 
 def _deviance_lanes(mu, y):
-    """(near, mid, delta): the lanes with |delta| <= _NEAR, those with
-    |ln(y/mu)| <= 1 otherwise, and delta = (y - mu)/mu in both, 0 elsewhere.
-    No y/mu is formed: it overflows at y = 1e10, mu = 1e-300."""
+    """(near, mid, delta): |delta| <= _NEAR, else |ln(y/mu)| <= 1, and
+    delta = (y - mu)/mu there. No y/mu: it overflows at y = 1e10, mu = 1e-300."""
     near = (y - mu).abs() <= _NEAR * mu
     mid = ~near & (y <= math.e * mu) & (math.e * y >= mu)
     delta = (torch.where(near | mid, y, mu) - mu) / mu
@@ -166,24 +139,13 @@ def _deviance_lanes(mu, y):
 
 
 def _half_deviance(a, c, mu, y):
-    """d(y, mu)/2 for power p = 2 - a, a in (0, 1), y > 0, mu > 0, with c
-    from _near_coefs(a), in three forms of mu^a ((1+delta)^a - 1 - a delta)
-    / (a (a-1)), delta = (y - mu)/mu.
+    """d(y, mu)/2 = mu^a ((1+delta)^a - 1 - a delta) / (a (a-1)), a = 2 - p.
 
-    near: mu^a sum_k c_k delta^k, the series of _near_coefs. The closed form
-    there, with x = ln y - ln mu (which carries eps |ln y| where only delta
-    matters) and expm1(a x) - a expm1(x) (which cancels two first-order
-    terms down to a quadratic one), gave 2.53 for a log-density of -5.28 in
-    float32 at (p, mu, phi, y) = (1.5, 1e6, 1e-12, 1e6 + 1/8).
-    mid: mu^a (expm1(a x) - a delta) / (a (a-1)) with x = log1p(delta). Its
-    first-order cancellation costs about 9 eps / (1 - a) at |delta| = 1/4.
-    Below the mean chebax takes x = log(y/mu), since XLA's float64 log1p is
-    up to 128 ulp off there. torch's is within an ulp, and x from delta lets
-    their roundings cancel in expm1(a x) - a delta (docs/divergences.md).
-    far: y^a / (a (a-1)) - y mu^(a-1) / (a-1) + mu^a / a. Its terms are
-    O(1/(a (1-a))) and cancel to O(delta^2), which costs 32 eps / (a (1-a))
-    at |delta| = 1/4 (670 eps at the box edges) but only ~50 eps beyond
-    |ln(y/mu)| = 1, where it takes over."""
+    near: the series of _near_coefs. The closed form loses everything there in
+    float32 (2.53 for -5.28 at p = 1.5, mu = 1e6, phi = 1e-12, y = mu + 1/8).
+    mid: expm1(a log1p(delta)) - a delta, ~9 eps / (1 - a) at |delta| = 1/4.
+    chebax uses log(y/mu) below the mean (docs/divergences.md).
+    far: three terms that cancel near the mean, ~50 eps past |ln(y/mu)| = 1."""
     near, mid, delta = _deviance_lanes(mu, y)
     ma = torch.pow(mu, a)
     dn = torch.where(near, delta, 0.0)
@@ -194,14 +156,9 @@ def _half_deviance(a, c, mu, y):
 
 
 class _HalfDeviance(torch.autograd.Function):
-    """_half_deviance with its partials in closed form. Autograd of the forms
-    there squares mu, in mu^(a-2) and in delta's own derivative, and that
-    overflows at mu = 1e-220, where the mean gradient at y = mu is exactly 0.
-    In mu and y they are -mu^(a-1) delta and (y^(a-1) - mu^(a-1))/(a-1), the
-    latter through expm1 where |ln(y/mu)| <= 1; in a, each form's own, the
-    series' through dc from _near_coefs. The c and dc it is given carry no
-    gradient: the a partial is total. With create_graph the partials are
-    formed from tracked ops, so second derivatives are exact too."""
+    """_half_deviance with closed-form partials: autograd of its forms squares
+    mu, which overflows at mu = 1e-220. c and dc carry no gradient, so the a
+    partial is total. Exact second derivatives with create_graph."""
 
     @staticmethod
     def forward(ctx, a, c, dc, mu, y):
@@ -229,14 +186,13 @@ class _HalfDeviance(torch.autograd.Function):
             far_a = ((ya * torch.log(y) / a - ya / (a * a) - y * m1 * log_mu) / (a - 1)
                      - far / ((a - 1) * (a - 1)) + ma * log_mu / a - ma / (a * a))
             d_a = (grad * torch.where(near, near_a, torch.where(mid, mid_a, far_a))).sum()
-        # exact in every lane, so from delta itself rather than the masked one
+        # exact in every lane, so not the masked delta
         return d_a, None, None, grad * (-m1 * ((y - mu) / mu)), grad * d_y
 
 
 class _Over(torch.autograd.Function):
-    """h / phi, its phi-derivative formed as -(h/phi)/phi. Autograd's own rule
-    squares phi first, which underflows at phi = 1e-200 and turns a zero
-    deviance into a nan dispersion gradient."""
+    """h / phi with d/dphi = -(h/phi)/phi. Autograd squares phi, which
+    underflows at phi = 1e-200 and makes a zero deviance a nan gradient."""
 
     @staticmethod
     def forward(ctx, h, phi):
@@ -250,15 +206,12 @@ class _Over(torch.autograd.Function):
 
 
 def _log_w(rho, z1, u1, coefs, z):
-    """ln Phi(rho, 0; z) for rho in the box and z > 0, given _rho_terms at
-    rho."""
-    # pow keeps Z to an ulp where exp((ln rho + ln z)/(1+rho)) would carry
-    # eps |ln z|; z^e cannot overflow for e < 1
+    """ln Phi(rho, 0; z) for rho in the box and z > 0, given _rho_terms(rho)."""
+    # pow keeps Z to an ulp (exp of logs carries eps |ln z|) and cannot overflow
     e = 1 / (1 + rho)
     big_z = (1 + rho) / rho * torch.pow(rho, e) * torch.pow(z, e)
     inner = big_z <= z1
-    # each branch gets inputs from its own region: the series runs at the
-    # split in tail lanes, the tail formula at Z1 in inner lanes
+    # each branch runs at the split in the other's lanes
     log_w_inner = _LogSeries.apply(rho, torch.where(inner, torch.log(z), u1))
     zt = torch.where(inner, z1, big_z)
     log_w_tail = (zt + 0.5 * torch.log(rho * zt / (1 + rho)) - _HALF_LOG_2PI
@@ -272,13 +225,9 @@ def _own(lanes, *xs):
 
 
 def _log_density(p_terms, mu, phi, y):
-    """ln f(y) for y > 0 and ln P(Y = 0) = -lambda at y = 0, for mu, phi > 0,
-    y >= 0 and p_terms from _p_terms, less in_box.
-
-    Each form sees its own lanes' arguments and 1 in the others: a form's
-    partials meet a zero cotangent where it is not selected, so one inf among
-    them is a nan gradient (at phi = 1e-200, lambda / phi alone overflows).
-    The positive lanes share -d/(2 phi)."""
+    """ln f(y) for y > 0 and -lambda at y = 0, given _p_terms less in_box. Each
+    form sees 1 in the other lanes, since an inf in an unselected form's
+    partials meets a zero cotangent and makes a nan gradient."""
     p, rho, a, pm1, log_pm1, log_a, z1, coefs, c, dc = p_terms
     pos = y > 0
     mu0, phi0 = _own(~pos, mu, phi)
@@ -288,19 +237,13 @@ def _log_density(p_terms, mu, phi, y):
     big_z = torch.pow(y_p, a) / (phi_p * a * pm1)
     inner = pos & (big_z <= z1)
     outer = pos & ~inner
-    # inner: the density as defined, ln W on u = ln z. mu enters only through
-    # -lambda - y/theta = -d/(2 phi) + y^a / (a (a-1) phi), so the mean
-    # gradient is the deviance's exact (y - mu) / (phi mu^p). Formed as
-    # -lambda and -y/theta, their mu-derivatives cancel only to rounding at
-    # y = mu, ~1e286 at mu = 1e-300. Likewise z = y^rho / (a (p-1)^rho
-    # phi^(1+rho)) holds no mu.
+    # inner: -lambda - y/theta as -d/(2 phi) + y^a / (a (a-1) phi), z without mu
     phi_i, y_i = _own(inner, phi, y)
     log_y = torch.log(y_i)
     u = rho * (log_y - log_pm1) - (1 + rho) * torch.log(phi_i) - log_a
     log_f_inner = (neg_half_dev + _Over.apply(torch.pow(y_i, a) / (a * (a - 1)), phi_i)
                    - log_y + _LogSeries.apply(rho, u))
-    # outer: the saddlepoint form plus the tabulated correction T/Z, with
-    # 1/Z built from phi directly rather than as a reciprocal of Z ~ 1/phi
+    # outer: 1/Z from phi directly, not a reciprocal of Z ~ 1/phi
     phi_t, y_t = _own(outer, phi, y)
     w = torch.where(outer, phi_t * a * pm1 / torch.pow(y_t, a), 1 / z1)
     log_f_tail = (neg_half_dev - 0.5 * (torch.log(phi_t) + p * torch.log(y_t))
@@ -309,8 +252,7 @@ def _log_density(p_terms, mu, phi, y):
 
 
 def _tail_coefs_python(rho):
-    """The tail series' coefficients in x at this rho as python floats, by
-    Clenshaw over the table's rows: for sizing, not for evaluation."""
+    """The tail coefficients at this rho as python floats, for sizing only."""
     t = math.log(rho) / A1
     rows, na = SHAPES["TABLE_TAIL"]
     flat = DATA["TABLE_TAIL"]
@@ -325,12 +267,8 @@ def _tail_coefs_python(rho):
 
 
 def _fixed_p_sizes(p, eps):
-    """(series, deviance series, tail) term counts that keep a python p's
-    error at eps: the series through its last term above eps e^-2 of the
-    largest at the split, where the peak index is largest (it grows with u);
-    the deviance series through its last term above eps/8 of the first at
-    |delta| = _NEAR; the tail through its last coefficient above eps/4 of the
-    largest. Python floats only, so no host sync and no graph break."""
+    """Term counts (series, deviance series, tail) that keep a python p's error
+    at eps. Python floats only, so no host sync and no graph break."""
     rho = (2 - p) / (p - 1)
     z1 = ZA + S1 * (1 + rho) ** 2
     u1 = (1 + rho) * math.log(rho * z1 / (1 + rho)) - math.log(rho)
@@ -360,15 +298,10 @@ def _chebder(c):
 
 
 def _fixed_p_constants(p, dtype, device):
-    """What tweedie_logpdf_fixed_p needs of a python p, with its series cut
-    to _fixed_p_sizes: p, rho, a = 2 - p, 1/(p-1) as a python float, a - 1,
-    a (p-1), a (a-1), 1 + rho, rho ln(p-1) + ln a, Z1, 2 Z1, 1/Z1; n and
-    -(lgamma(n+1) + lgamma(rho n)) for the series; the tail's coefficients,
-    those of its derivative and k for cos(k acos x); the deviance series'
-    coefficients and the exponents of its powers."""
+    """What tweedie_logpdf_fixed_p needs of a python p, its series cut to
+    _fixed_p_sizes."""
     if torch.compiler.is_compiling():
-        # dynamo would step through the sizing loops bytecode by bytecode
-        # (torch 2.4 for minutes); a fused graph can afford every term
+        # dynamo takes minutes over the sizing loops; a fused graph affords every term
         k_series, k_near, k_tail = N_TERMS, _N_NEAR, SHAPES["TABLE_TAIL"][0]
     else:
         k_series, k_near, k_tail = _fixed_p_sizes(p, torch.finfo(dtype).eps)
@@ -391,17 +324,13 @@ _FIXED_P_BYTES = 64 << 20   # temporaries of one pass in _fixed_p_lanes
 
 
 def _fixed_p_lanes(terms, u, x, dn, grads):
-    """Per lane, from (lanes, terms) tensors taken _FIXED_P_BYTES at a time, a
-    few kernels each: ln S at u, the series cut to n's terms, and with grads
-    its mean n (d ln S/du); T at x as sum_k c_k cos(k acos x), and with grads
-    T'(x); the deviance series sum_j c_j dn^j."""
+    """Per lane, _FIXED_P_BYTES at a time: ln S at u, T at x and the deviance
+    series at dn, plus with grads the series' mean n and T'(x)."""
     n, neg_c, coefs, dcoefs, k, c_near, j = terms[12:]
     width = n.numel() + k.numel() + j.numel()
     step = max(1, _FIXED_P_BYTES // (2 * width * u.element_size()))
     if torch.compiler.is_compiling():
-        # one pass: inductor fuses the terms into reductions, so nothing of
-        # (lanes, terms) is kept, and every pass would be more graph (80 s
-        # to compile at 2^20 lanes, 1.3 s a call in float64)
+        # one pass: inductor fuses the terms, and each pass adds graph to compile
         step = max(1, u.numel())
     theta = torch.acos(x)
     out = [], [], [], [], []
@@ -422,21 +351,12 @@ def _fixed_p_lanes(terms, u, x, dn, grads):
 
 
 def _fixed_p_density(terms, mu, phi, y, grads):
-    """(ln f, d/dmu, d/dphi) for tweedie_logpdf_fixed_p, with mu, phi > 0 and
-    y >= 0, formed without autograd (the partials None without grads). Every
-    lane runs every form and torch.where picks, so an unselected form may be
-    inf or nan where it does not apply.
+    """(ln f, d/dmu, d/dphi) without autograd; every form runs in every lane.
 
-    d ln f/dmu = (y - mu) / (phi mu^p) in every lane, the exponential
-    dispersion family's identity. phi d ln f/dphi is lambda at y = 0;
-    lambda + y/theta - (1 + rho) E[n] below the split, E[n] the series' mean
-    n; and d/2 / phi - 1/2 + (T + 2 Z1 w T') w above it, w = 1/Z.
-
-    The half-deviance d/2 is mu^a sum_j c_j delta^(j+2) near the mean, as in
-    _half_deviance, and mu^a (expm1(a x) - a delta) / (a (a-1)) elsewhere,
-    which only the overflow of y/mu kept from serving beyond |ln(y/mu)| = 1.
-    There x = ln(y/mu), not log1p(delta): |x| >= 0.22, and at y << mu,
-    1 + delta keeps none of y/mu's digits."""
+    d/dmu = (y - mu) / (phi mu^p). phi d/dphi is lambda at y = 0,
+    lambda + y/theta - (1 + rho) E[n] below the split, and
+    d/(2 phi) - 1/2 + (T + 2 Z1 w T') w above it, w = 1/Z. Away from the mean
+    the deviance takes ln(y/mu): 1 + delta keeps none of y/mu's digits at y << mu."""
     p, rho, a, inv_b, am1, ab, aa1, rho1, u0, z1, z1x2, inv_z1 = terms[:12]
     m1 = torch.pow(mu, am1)
     ma = mu * m1
@@ -467,8 +387,7 @@ def _fixed_p_density(terms, mu, phi, y, grads):
 
 
 class _FixedPDensity(torch.autograd.Function):
-    """_fixed_p_density with its partials formed in the forward pass; the
-    backward only scales them. First derivatives in mu and phi only."""
+    """_fixed_p_density with partials from the forward pass, first order only."""
 
     @staticmethod
     def forward(ctx, terms, mu, phi, y):
@@ -486,25 +405,9 @@ class _FixedPDensity(torch.autograd.Function):
 
 
 def log_wright_bessel0(rho, z):
-    """ln Phi(rho, 0; z), Wright's generalized Bessel function at beta = 0.
-
-    rho is a scalar in [1/19, 19] (python number or one-element tensor),
-    uniform per call; z >= 0 is a tensor or number. Computes in the widest
-    floating dtype among the arguments, else the default dtype (float16 and
-    bfloat16 through float32), on the device of the first tensor argument.
-
-    A python rho is the cheaper form for a fixed rho: what depends on rho
-    alone is computed at the first call with that rho (per dtype and device)
-    and kept, and only that call waits for the GPU. A tensor rho recomputes it
-    on every call.
-
-    z = 0 gives -inf (Phi(rho, 0; 0) = 0). z < 0, nan and a tensor rho outside
-    the box give nan; a python rho outside it raises ValueError.
-
-    Differentiable in rho and z, to second order, in reverse mode only:
-    forward mode (torch.func.jvp, torch.autograd.forward_ad) is not
-    implemented.
-    """
+    """ln Phi(rho, 0; z), Wright's generalized Bessel function at beta = 0, for
+    rho in [1/19, 19] and z >= 0 (-inf at 0). Derivatives in rho and z to second
+    order."""
     work, out = work_dtype(z, rho)
     dev = device_of(z, rho)
     z = tensor_of(z, work, dev)
@@ -518,30 +421,11 @@ def log_wright_bessel0(rho, z):
 
 
 def tweedie_logpdf(p, mu, phi, y):
-    """ln of the Tweedie density at y, for power p in [1.05, 1.95].
-
-    For y > 0 the log-density; at y = 0, ln P(Y = 0) = -lambda, the point
-    mass. p is a scalar (python number or one-element tensor), uniform per
-    call; mu > 0, phi > 0 and y >= 0 broadcast against each other. Computes in
-    the widest floating dtype among the arguments, else the default dtype
-    (float16 and bfloat16 through float32), on the device of the first tensor
-    argument.
-
-    A python p is the cheaper form for a fixed p: what depends on p alone,
-    such as the tail series' coefficients, is computed at the first call with
-    that p (per dtype and device) and kept, and only that call waits for the
-    GPU. A tensor p recomputes it on every call.
-
-    mu <= 0, phi <= 0, y < 0, nan and a tensor p outside the box give nan; a
-    python p outside it raises ValueError.
-
-    Differentiable in p, mu, phi and y (y only where y > 0), to second order,
-    in reverse mode only: forward mode is not implemented.
-    """
+    """ln of the Tweedie density at y > 0, and ln P(Y = 0) at y = 0, for p in
+    [1.05, 1.95] and broadcasting mu > 0, phi > 0, y >= 0. Derivatives in p, mu,
+    phi and y (where y > 0) to second order."""
     work, out = work_dtype(y, mu, phi, p)
     dev = device_of(y, mu, phi, p)
-    # created in the working dtype: as_tensor(0.7).to(float64) would round
-    # 0.7 through float32 first
     mu, phi, y = (tensor_of(v, work, dev) for v in (mu, phi, y))
     mu, phi, y = torch.broadcast_tensors(mu, phi, y)
     p = scalar(p, work, dev, "tweedie_logpdf", "p", P_LO, P_HI)
@@ -554,21 +438,10 @@ def tweedie_logpdf(p, mu, phi, y):
 
 
 def tweedie_logpdf_fixed_p(p, mu, phi, y):
-    """tweedie_logpdf for fitting mu and phi at a fixed power, with less
-    work per call: the same values, within the same floors.
-
-    Restricted to: p a python number in [1.05, 1.95]; derivatives in mu and
-    phi, first order, reverse mode (none in y, which must not require one);
-    y/mu finite in the working dtype. Within those, mu > 0, phi > 0 and
-    y >= 0 broadcast, the dtype and device rules are tweedie_logpdf's, and
-    invalid arguments give nan.
-
-    What the restrictions buy: the series, the deviance's series and the
-    tail correction keep only the terms the working dtype resolves at this
-    p (for float32 at p = 1.5, 26, 11 and 5 of 64, 26 and 32), and the
-    partials come out of the forward pass in closed form, so the backward
-    pass only scales them.
-    """
+    """tweedie_logpdf at a python p, for fitting mu and phi: the same values
+    within the same floors, first derivatives in mu and phi only, y/mu finite.
+    It keeps only the terms the dtype resolves (in float32 at p = 1.5, 26, 11 and
+    5 of 64, 26 and 32) and forms the partials in the forward pass."""
     if isinstance(p, torch.Tensor):
         raise TypeError("tweedie_logpdf_fixed_p takes p as a python number; "
                         "use tweedie_logpdf for a tensor p")
@@ -592,16 +465,9 @@ def tweedie_logpdf_fixed_p(p, mu, phi, y):
 
 
 class Tweedie(torch.distributions.Distribution):
-    """Tweedie(mu, phi, power), the compound Poisson-gamma law.
-
-    Y is exactly 0 with probability exp(-mu^(2-p) / (phi (2-p))) and positive
-    and continuous otherwise. Mean mu, variance phi mu^power. mu and phi
-    broadcast; power is a scalar in [1.05, 1.95], checked as in
-    tweedie_logpdf, which log_prob is (same dtype, derivative and nan rules,
-    and a python power stays a python number, the cheaper form).
-    Sampling draws the Poisson count and a gamma total; it is not
-    reparameterized (the count is discrete).
-    """
+    """Tweedie(mu, phi, power), compound Poisson-gamma with mean mu, variance
+    phi mu^power and power in [1.05, 1.95]. log_prob is tweedie_logpdf; sample
+    is not reparameterized (the count is discrete)."""
 
     arg_constraints = {"mu": constraints.positive, "phi": constraints.positive}
     support = constraints.nonnegative
@@ -612,8 +478,7 @@ class Tweedie(torch.distributions.Distribution):
         dev = device_of(mu, phi, power)
         mu, phi = (tensor_of(v, work, dev) for v in (mu, phi))
         self.mu, self.phi = torch.broadcast_tensors(mu, phi)
-        # log_prob passes a python power on as a number, whose terms
-        # tweedie_logpdf keeps between calls
+        # a python power stays one, so tweedie_logpdf keeps its terms
         self._power = scalar(power, work, dev, "Tweedie", "power", P_LO, P_HI)
         self.power = tensor_of(self._power, work, dev)
         super().__init__(self.mu.shape, validate_args=validate_args)

@@ -1,10 +1,4 @@
-"""mpmath references for the fixtures. Export time only.
-
-The same references chebax's tests use (tests/test_tweedie.py there), at 40
-digits: Phi summed over a window around its peak term (the terms are
-log-concave in n, so everything outside the window is below 1e-52 of the
-peak), and the Tweedie density from its definition.
-"""
+"""mpmath references for the fixtures at 40 digits, the same as chebax's tests."""
 
 import mpmath as mp
 
@@ -12,7 +6,7 @@ mp.mp.dps = 40
 
 
 def log_phi(rho, beta, z):
-    """ln Phi(rho, beta; z) for z > 0."""
+    """ln Phi(rho, beta; z), z > 0: the log-concave terms above 1e-52 of the peak."""
     rho, beta, z = mp.mpf(rho), mp.mpf(beta), mp.mpf(z)
     lz = mp.log(z)
     nmin = 1 if beta == 0 else 0
@@ -88,10 +82,8 @@ def tweedie_grad(p, mu, phi, y, i):
 
 
 def tweedie_logpdf_p15(mu, phi, y):
-    """ln f at p = 1.5 from Phi(1, 0; z) = sqrt(z) I1(2 sqrt(z)), 30 digits
-    above the working precision: on concentrated data the density's large
-    terms cancel, and there they reach 1e16. chebax's test_tweedie.py uses
-    the same."""
+    """ln f at p = 1.5 from Phi(1, 0; z) = sqrt(z) I1(2 sqrt(z)), with 30 extra
+    digits since its terms reach 1e16 and cancel on concentrated data."""
     with mp.extradps(30):
         mu, phi, y = map(mp.mpf, (mu, phi, y))
         lam = 2 * mp.sqrt(mu) / phi

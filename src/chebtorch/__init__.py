@@ -1,14 +1,9 @@
 # Copyright (c) 2026, Andres Hernandez
 # SPDX-License-Identifier: BSD-3-Clause
 # From chebtorch: https://github.com/andreshernandez-spec/chebtorch
-"""chebtorch: chebax's special functions and distributions for PyTorch,
-inference only.
-
-A family is its module (src/chebtorch/<family>.py), its generated tables
-(_<family>_data.py) and the shared helpers (cheb_common.py), which import
-only math, torch and each other, so a project can copy them as they are. Names
-load lazily: `import chebtorch` imports no family until one of its functions
-is used.
+"""chebax's special functions and distributions for PyTorch, inference only. A
+family is its module, its generated _<family>_data.py and cheb_common.py, which
+a project can copy as they are. Families load on first use.
 """
 
 import importlib
