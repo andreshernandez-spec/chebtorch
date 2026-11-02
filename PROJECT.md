@@ -66,7 +66,8 @@ This is the design's centre. Every vendorable family file obeys it, and CI check
    sha256 and mpmath version (both from the table's META), and the sha256 of the
    data, which a test recomputes. Every file carries a copyright and SPDX line.
 6. **The copy test.** CI copies each family's files (its module and the modules it
-   imports) into an empty temporary package, the module under another name
+   imports), and each other public module's (`tweedie_fixed_p.py`, a narrower
+   entry that copies without `tweedie.py`), into an empty temporary package, the module under another name
    (`hostpkg/losses/tweedie_loss.py`), imports it there with chebtorch unimportable
    and runs its fixtures. That is the "copy the files, change nothing" promise,
    executed.
@@ -240,6 +241,7 @@ src/chebtorch/
     __init__.py         lazy re-exports (PEP 562), so `import chebtorch` loads no tables
     cheb_common.py      helpers every family imports (section 3)
     tweedie.py          a family's code
+    tweedie_fixed_p.py  its fixed-power entry, copyable without tweedie.py
     _tweedie_data.py    its tables, written by tools/export.py
     gammainc.py, _gammainc_data.py, besselk.py, ...
     _weights/           raw float64 blobs for the library-only families

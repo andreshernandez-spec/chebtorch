@@ -12,7 +12,7 @@ _EXPORTS = {
     "Tweedie": "tweedie",
     "log_wright_bessel0": "tweedie",
     "tweedie_logpdf": "tweedie",
-    "tweedie_logpdf_fixed_p": "tweedie",
+    "tweedie_logpdf_fixed_p": "tweedie_fixed_p",
 }
 
 __all__ = ["Tweedie", "log_wright_bessel0", "tweedie_logpdf", "tweedie_logpdf_fixed_p"]

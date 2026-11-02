@@ -35,7 +35,8 @@ import pytest
 import torch
 
 from chebtorch.cheb_common import cheb
-from chebtorch.tweedie import (A1, P_HI, P_LO, Tweedie, _HalfDeviance, _near_coefs, _split,
+from chebtorch._tweedie_data import A1
+from chebtorch.tweedie import (P_HI, P_LO, Tweedie, _HalfDeviance, _near_coefs, _split,
                                log_wright_bessel0, tweedie_logpdf, tweedie_logpdf_fixed_p)
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "tweedie.json"

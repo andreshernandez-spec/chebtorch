@@ -18,6 +18,9 @@ SRC = ROOT / "src" / "chebtorch"
 sys.path.insert(0, str(ROOT / "tools"))
 from export import FAMILIES, data_sha256  # noqa: E402
 
+# every module a project can copy: a family's own and any other public one
+ENTRIES = sorted(p.stem for p in SRC.glob("*.py") if not p.stem.startswith(("_", "cheb_")))
+
 
 def _imports(path):
     """(top-level absolute imports, sibling modules) of one source file."""
@@ -46,14 +49,14 @@ def family_files(family):
     return files
 
 
-@pytest.mark.parametrize("family", sorted(FAMILIES))
+@pytest.mark.parametrize("family", ENTRIES)
 def test_imports_only_math_torch_and_each_other(family):
     for name, path in family_files(family).items():
         absolute, _ = _imports(path)
         assert absolute <= {"math", "torch"}, (name, absolute)
 
 
-@pytest.mark.parametrize("family", sorted(FAMILIES))
+@pytest.mark.parametrize("family", ENTRIES)
 def test_docstring_names_the_files_to_copy(family):
     doc = importlib.import_module(f"chebtorch.{family}").__doc__
     for name in family_files(family):
@@ -95,29 +98,35 @@ def t(v):
 
 
 worst = 0.0
-for c in fx["log_wright_bessel0"]:
+for c in fx["log_wright_bessel0"] if hasattr(m, "log_wright_bessel0") else []:
     v = m.log_wright_bessel0(c["rho"], t(c["z"])).item()
     assert math.isfinite(v), c             # max() below would drop a nan
     worst = max(worst, abs(v - c["value"]) / max(1.0, abs(c["value"])))
-for c in fx["tweedie_logpdf"]:
-    v = m.tweedie_logpdf(c["p"], c["mu"], c["phi"], t(c["y"])).item()
-    assert math.isfinite(v), c
-    worst = max(worst, abs(v - c["value"]) / max(1.0, abs(c["value"])))
+for name in ("tweedie_logpdf", "tweedie_logpdf_fixed_p"):
+    for c in fx["tweedie_logpdf"] if hasattr(m, name) else []:
+        v = getattr(m, name)(c["p"], c["mu"], c["phi"], t(c["y"])).item()
+        assert math.isfinite(v), c
+        worst = max(worst, abs(v - c["value"]) / max(1.0, abs(c["value"])))
 print(worst)
 """
 
 
-def test_copied_files_work_alone(tmp_path):
-    # the family module renamed, in a package that knows nothing of chebtorch
+@pytest.mark.parametrize("entry", ["tweedie", "tweedie_fixed_p"])
+def test_copied_files_work_alone(tmp_path, entry):
+    # the entry module renamed, in a package that knows nothing of chebtorch
     pkg = tmp_path / "hostpkg" / "losses"
     pkg.mkdir(parents=True)
     (tmp_path / "hostpkg" / "__init__.py").write_text("")
     (pkg / "__init__.py").write_text("")
-    for name, path in family_files("tweedie").items():
-        shutil.copy(path, pkg / ("tweedie_loss.py" if name == "tweedie" else path.name))
+    for name, path in family_files(entry).items():
+        shutil.copy(path, pkg / ("tweedie_loss.py" if name == entry else path.name))
     env = {**os.environ, "PYTHONPATH": str(tmp_path), "CUDA_VISIBLE_DEVICES": ""}
     out = subprocess.run([sys.executable, "-c", COPY_CHECK,
                           str(ROOT / "tests" / "fixtures" / "tweedie.json")],
                          capture_output=True, text=True, env=env, cwd=tmp_path)
     assert out.returncode == 0, out.stderr[-2000:]
     assert float(out.stdout) <= 3e-12            # the float64 density bar
+
+
+def test_fixed_p_copies_without_tweedie():
+    assert "tweedie" not in family_files("tweedie_fixed_p")

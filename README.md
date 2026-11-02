@@ -45,6 +45,11 @@ nothing. The family module can take any name; the other two keep theirs (a new
 directory with an empty `__init__.py` keeps them out of your namespace). Each
 family's docstring names its files, and CI runs exactly this copy.
 
+A family can have a second, narrower module. `tweedie_fixed_p.py` holds
+`tweedie_logpdf_fixed_p` and copies with only `_tweedie_data.py` and
+`cheb_common.py`, without `tweedie.py`, which imports the pieces they share from
+it. A copy of `tweedie.py` therefore takes `tweedie_fixed_p.py` along.
+
 ## License
 
 BSD-3-Clause. Every file in `src/chebtorch/` carries its copyright and SPDX
