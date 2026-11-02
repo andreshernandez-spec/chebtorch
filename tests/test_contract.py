@@ -1,11 +1,6 @@
-"""The vendoring contract (PROJECT.md section 3), checked for every family.
-
-A family is its module plus the sibling modules it imports: its generated
-tables (_<family>_data.py) and the shared helpers (cheb_common.py). Together they
-import only math, torch and each other; the data is exactly what its
-provenance hash names (and, when chebax is importable, exactly chebax's
-tables); and the files copied alone into another package, the family module
-under another name, work with chebtorch itself unimportable.
+"""The vendoring contract (PROJECT.md section 3): a family's files import only
+math, torch and each other, its data matches its provenance hash and chebax, and
+copied alone into another package the files work without chebtorch.
 """
 
 import ast
@@ -113,8 +108,7 @@ print(worst)
 
 
 def test_copied_files_work_alone(tmp_path):
-    # the family module under another name, its siblings under their own, in
-    # a package that knows nothing of chebtorch
+    # the family module renamed, in a package that knows nothing of chebtorch
     pkg = tmp_path / "hostpkg" / "losses"
     pkg.mkdir(parents=True)
     (tmp_path / "hostpkg" / "__init__.py").write_text("")

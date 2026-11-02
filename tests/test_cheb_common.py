@@ -1,7 +1,4 @@
-"""The caches in cheb_common.py. Tables and Memo build outside inference
-mode and keep nothing built under torch.compile; Memo keeps python numbers
-only, per (value, dtype, device), never under CUDA graph capture, and at
-most _KEEP of them."""
+"""The caches in cheb_common.py."""
 
 import pytest
 import torch
@@ -57,14 +54,13 @@ def test_caches_build_outside_inference_mode():
         kept = memo(1.5, torch.float64, CPU)[0]
         table = tables("T", torch.float64, CPU)
     assert not kept.is_inference() and not table.is_inference()
-    # the product saves both for its backward, which inference tensors refuse
+    # the product saves both for backward, which inference tensors refuse
     x = torch.ones(2, dtype=torch.float64, requires_grad=True)
     (x * kept * table).sum().backward()
 
 
 def test_caches_keep_nothing_under_torch_compile():
-    # what a compiled call builds is a value of its graph, and with CUDA
-    # graphs (mode="reduce-overhead") the next replay overwrites it
+    # a compiled call's tensors are graph values, which CUDA graph replay overwrites
     memo, _ = _counting()
     tables = Tables({"T": (2,)}, {"T": [1.0, 2.0]})
     f = torch.compile(lambda y: memo(1.5, torch.float64, y.device)[0]
@@ -76,9 +72,7 @@ def test_caches_keep_nothing_under_torch_compile():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_memo_keeps_nothing_a_cuda_graph_captures():
-    # kept tensors are complete before capture and read by the graph; a value
-    # first seen in capture is computed in the graph, since waiting for the
-    # GPU is not allowed there and the result would not exist until a replay
+    # 2.5, first seen in the capture, runs in the graph, since capture cannot wait
     memo, _ = _counting()
     dev = torch.device("cuda")
     memo(1.5, torch.float64, dev)
@@ -93,9 +87,7 @@ def test_memo_keeps_nothing_a_cuda_graph_captures():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_memo_results_are_complete_on_other_streams():
-    # any stream may read a kept result from the next call on, so keeping
-    # it waits until it exists: else the read below races the work queued
-    # ahead of it (~20 ms of matmuls)
+    # keeping waits for the queued work (~20 ms of matmuls), or this read races it
     memo, _ = _counting()
     dev = torch.device("cuda")
     a = torch.randn(2048, 2048, device=dev)
@@ -110,7 +102,6 @@ def test_memo_results_are_complete_on_other_streams():
 
 
 def test_memo_raw_passes_the_number():
-    # for terms whose sizes depend on the value itself
     seen = []
 
     def terms(v, dtype, device):

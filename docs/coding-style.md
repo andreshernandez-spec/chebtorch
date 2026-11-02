@@ -67,16 +67,16 @@ module only when two families need it.
 
 ## Docstrings and comments
 
-A public entry point states what it computes, parameter and argument domains,
-scalar versus broadcasting behavior, dtype and device policy, endpoint and
-invalid-input behavior, and which derivatives are available, naming the modes
-that are not (forward mode, today). A family's module docstring explains the
-factorization, coordinate maps, seams and numerical floor.
+Keep both short: one line where one line works, a few for a public entry
+point, which states what it computes, its domains and its derivatives. Rules a
+family's functions share (dtype and device, per-call parameters, invalid
+inputs, derivative modes) go once in the module docstring, with the
+factorization, seams and floor in brief. Do not restate the code or the name.
 
-Comments explain a choice, a boundary condition or an invariant, in plain
-words and short sentences. Put a formula beside the code whose stability
-depends on it, and say why a tempting rearrangement loses accuracy. Measured
-floors, bars and numerical traps live beside the code or test they describe.
+Comments explain a choice, a boundary condition or an invariant, in one line
+where possible. Say why a tempting rearrangement loses accuracy, with the
+number that shows it. Measured floors and bars go in the test docstring; longer
+measurements belong in chebax or results/.
 
 ## Numerical expressions
 

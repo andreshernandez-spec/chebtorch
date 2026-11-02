@@ -1,21 +1,12 @@
-"""chebtorch against chebax on random inputs over the box, float64.
+"""chebtorch against chebax on random inputs over the box, float64. Both use the
+same tables and formulas, so a wrong table, constant or branch lands orders of
+magnitude above the bars. d/dp is the batch sum, normalized by sum max(1, |d/dp|).
+CI's weekly parity job installs chebax from main.
 
-Both evaluate the same tables with the same formulas, so they agree to within
-their accuracy floors (tests/test_tweedie.py): a wrong table, constant or
-branch shows up orders of magnitude above the bars. Metrics as in
-tests/test_tweedie.py; d/dp is compared as the sum over the batch, normalized
-by sum max(1, |d/dp|), since chebtorch returns only the sum for a scalar p.
-
-Skipped unless chebax and jax import; CI's weekly parity job installs chebax
-from main.
-
-Measured worst difference (2026-10-29, chebax main at a17f1bf on jax 0.11, torch 2.13,
-CPU; bars about 4x): density 8.0e-13, d/dp 5.6e-16, d/dln mu 4.5e-16,
-d/dln phi 8.5e-12, d/dln y 7.3e-12; ln W 7.1e-15, d/dz 1.1e-14, d/drho 5.1e-16.
-Both take the mean gradient from the deviance's closed form. Below the mean,
-the deviance's middle form takes ln(y/mu) as log1p(delta) here and as
-log(y/mu) in chebax (docs/divergences.md); the difference there is below the
-density's floor.
+Measured worst (2026-10-29, chebax a17f1bf, jax 0.11, torch 2.13, CPU; bars about
+4x): density 8.0e-13, d/dp 5.6e-16, d/dln mu 4.5e-16, d/dln phi 8.5e-12, d/dln y
+7.3e-12; ln W 7.1e-15, d/dz 1.1e-14, d/drho 5.1e-16. Below the mean the deviance
+takes log1p(delta) here and log(y/mu) in chebax (docs/divergences.md).
 """
 
 import numpy as np
@@ -35,8 +26,7 @@ BARS = {"f": 2.7e-12, "dp": 2e-15, "dlnmu": 2.2e-15, "dlnphi": 3.1e-11, "dlny": 
 
 
 def _draws(rng, p):
-    """mu and phi log-uniform per element, y drawn from the law; a quarter of
-    y log-uniform over [1e-8, 1e4] instead, to reach the far tails."""
+    """mu, phi log-uniform, y from the law but a quarter log-uniform in [1e-8, 1e4]."""
     mu = np.exp(rng.uniform(np.log(0.05), np.log(50.0), N))
     phi = np.exp(rng.uniform(np.log(0.02), np.log(5.0), N))
     n = rng.poisson(mu ** (2 - p) / (phi * (2 - p)))

@@ -1,18 +1,10 @@
 # Copyright (c) 2026, Andres Hernandez
 # SPDX-License-Identifier: BSD-3-Clause
 # From chebtorch: https://github.com/andreshernandez-spec/chebtorch
-"""Helpers every chebtorch family imports: Clenshaw evaluation, the table
-cache, dtype and device resolution, tensors from arguments without a host
-sync, the check for parameters that are uniform per call, and the cache of
-what depends on such a parameter alone. Imports only torch.
-
-Chebyshev coefficients follow numpy.polynomial: plain c[0], lowest degree
-first, the coordinate mapped to [-1, 1] by the caller. The names here carry no
-underscore so families can import them, but they are internal: chebtorch's API
-is what chebtorch exports.
-
-A project that copies a family copies this file next to it, under this name,
-which is specific enough not to clash with the project's own modules.
+"""Helpers every chebtorch family imports, internal despite their names; a
+project copies this file next to a family under this name. Imports only torch.
+Chebyshev coefficients follow numpy.polynomial: lowest degree first, plain c[0],
+x mapped to [-1, 1] by the caller.
 """
 
 import torch
@@ -21,8 +13,7 @@ _KEEP = 64                       # values of a parameter a Memo keeps
 
 
 def cheb(x, c):
-    """sum_k c[k] T_k(x) by Clenshaw. c's first axis is the degree, so a
-    (degree, n) table gives n series at once."""
+    """sum_k c[k] T_k(x) by Clenshaw; a (degree, n) table gives n series."""
     x2 = 2 * x                   # exact, so the same bits as 2 * x * b1 per step
     b1 = torch.zeros_like(x * c[0])
     b2 = torch.zeros_like(b1)
@@ -32,8 +23,7 @@ def cheb(x, c):
 
 
 class Tables:
-    """A family's generated tables as tensors, each built once per (dtype,
-    device) from its float64 literals."""
+    """A family's tables as tensors, built once per (dtype, device)."""
 
     def __init__(self, shapes, data):
         self._shapes, self._data, self._cache = shapes, data, {}
@@ -42,22 +32,19 @@ class Tables:
         key = (name, dtype, device)
         t = self._cache.get(key)
         if t is None:
-            # the first call may come from an inference_mode block, and
             # autograd cannot save inference tensors in later calls
             with torch.inference_mode(False):
                 t = torch.tensor(self._data[name], dtype=torch.float64)
                 t = t.reshape(self._shapes[name]).to(dtype=dtype, device=device)
-            # built under torch.compile, t is a value of the graph, which a
-            # CUDA graph replay overwrites (mode="reduce-overhead")
+            # under torch.compile t is a graph value, which CUDA graph replay overwrites
             if not torch.compiler.is_compiling():
                 self._cache[key] = t
         return t
 
 
 def work_dtype(*xs):
-    """(compute dtype, result dtype) for these arguments: the widest
-    floating tensor among them, else the default dtype. Half precision
-    computes in float32 and is cast back."""
+    """(compute dtype, result dtype): the widest floating tensor, else the
+    default dtype. Half precision computes in float32."""
     out = None
     for x in xs:
         if isinstance(x, torch.Tensor) and x.is_floating_point():
@@ -76,10 +63,8 @@ def device_of(*xs):
 
 
 def tensor_of(v, dtype, device):
-    """v as a tensor in dtype on device. A python number is filled in on the
-    device: torch.tensor(v, device="cuda") copies it from the host, which
-    waits for all queued GPU work. A number beyond dtype's largest is inf,
-    where torch.full would raise."""
+    """v in dtype on device. A python number is filled in on the device, since
+    torch.tensor(v, device="cuda") waits for the GPU, and is inf past dtype's max."""
     if isinstance(v, (int, float)):
         v = float(v)
         if abs(v) > torch.finfo(dtype).max:
@@ -89,10 +74,8 @@ def tensor_of(v, dtype, device):
 
 
 def scalar(v, dtype, device, who, name, lo, hi):
-    """A uniform-per-call parameter: a python number checked against the box
-    and returned as a float (Memo keys on it), or a one-element tensor as a
-    0-d tensor in dtype on device. A tensor is not checked (it may be
-    traced) and gives nan downstream when out of the box."""
+    """A per-call parameter: a python number checked against [lo, hi] (a float,
+    for Memo's key), or a one-element tensor as 0-d, unchecked as it may be traced."""
     if not isinstance(v, torch.Tensor):
         if not lo <= float(v) <= hi:
             raise ValueError(f"{who} covers {name} in [{lo}, {hi}], got {v}")
@@ -104,20 +87,12 @@ def scalar(v, dtype, device, who, name, lo, hi):
 
 
 class Memo:
-    """fn of a uniform-per-call parameter, kept per (value, dtype, device)
-    when the parameter is a python number: what depends on it alone then
-    costs a dict lookup on later calls, not fn's kernels. Called as
-    memo(v, dtype, device) with v from scalar(); fn gets v as a 0-d tensor.
-    A tensor v runs fn every time, as do calls under torch.compile, which
-    puts that work in the graph, and calls a CUDA graph captures.
-
-    Keeping a result waits for the GPU once, so the result is complete before
-    another stream reads it, and builds it outside inference mode, like
-    Tables. Nothing kept is dropped, since a captured CUDA graph may still
-    read it; past _KEEP values fn runs every time.
-
-    With raw=True fn gets (v, dtype, device), v the python number itself, for
-    terms whose sizes depend on its value; the caller then passes no tensor."""
+    """fn(v as a 0-d tensor), called as memo(v, dtype, device) with v from scalar().
+    Results for python numbers are kept per (v, dtype, device): built outside
+    inference mode, complete before another stream reads them, and never dropped
+    (a CUDA graph may read them), so past _KEEP values fn runs every time. Tensors
+    and calls under torch.compile or CUDA graph capture always run fn.
+    raw=True passes (v, dtype, device) instead, for sizes that depend on v."""
 
     def __init__(self, fn, raw=False):
         self._fn, self._raw, self._kept = fn, raw, {}

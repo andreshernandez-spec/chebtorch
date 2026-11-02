@@ -1,48 +1,26 @@
-"""Tweedie densities and ln Phi(rho, 0; z) against mpmath fixtures.
+"""Tweedie densities and ln Phi(rho, 0; z) against mpmath fixtures at 40 digits
+(tools/export.py --fixtures): a grid, the region below the split at small p where
+errors peak, and random points. Errors are |err| / max(1, |ref|), gradients in
+mu, phi and y as x df/dx. float32 is compared with float64 at the same float32
+inputs, since rounding p alone moves the density by ~1e-4 at p = 1.05.
 
-Fixtures (tests/fixtures/tweedie.json) are mpmath at 40 digits, written by
-tools/export.py --fixtures: a grid over the box, the region just below the
-split at small p where the errors peak, and random points. Both functions are
-logarithms, so the error is |err| / max(1, |ref|): absolute in the log where it
-is small, relative where it is large. Gradients in mu, phi and y are taken in
-their logarithms (x df/dx): df/dphi is 1/phi times a cancellation that does
-not shrink with phi, so a plain metric grows as 1/phi near a zero of it.
-
-float64 is checked against mpmath. float32 is checked against float64 at the
-same float32 inputs, which separates the arithmetic from the rounding of the
-inputs (at p = 1.05 df/dp is in the thousands, so rounding p alone moves the
-density by ~1e-4).
-
-Measured worst (2026-10-28, torch 2.13 on CPU and an RTX 3080 Laptop, and
-torch 2.4.1, the CI floor, on CPU; the bars are about 4x):
-
+Measured worst (2026-10-28, torch 2.13 on CPU and an RTX 3080, torch 2.4.1 on
+CPU; bars about 4x), peaking at p = 1.05 where lgamma(rho n) reaches ~4000:
 float64   ln W 7.3e-16, d/dz 1.0e-14, d/drho 1.2e-14; density 9.9e-13,
-          d/dp 6.1e-11, d/dln mu 4.0e-16, d/dln phi 9.8e-12, d/dln y 6.0e-12.
-          All but d/dln mu at p = 1.05: below the split lgamma(rho n) reaches
-          ~4000 in the series and eps |lgamma| survives into an O(1)
-          log-density (d/dp also carries drho/dp = -400 there). d/dln mu comes
-          from the deviance's closed form everywhere, so it is near an ulp.
-float32   ln W 5.6e-7, d/dz 1.7e-6, d/drho 4.4e-6 (z within float32's range),
-          and by p, the same cancellation at float32's eps:
+          d/dp 6.1e-11, d/dln mu 4.0e-16, d/dln phi 9.8e-12, d/dln y 6.0e-12
+float32   ln W 5.6e-7, d/dz 1.7e-6, d/drho 4.4e-6 (z within float32's range)
                       density  d/dp     d/dln mu  d/dln phi  d/dln y
           p < 1.1     4.1e-4   2.0e-2   1.6e-7    5.3e-3     3.8e-3
           p < 1.3     2.3e-5   5.1e-4   1.8e-7    7.7e-5     4.4e-5
           p >= 1.3    1.5e-6   7.3e-5   1.8e-7    3.5e-6     2.1e-6
-          The density's y/theta - lambda is formed from the deviance (for the
-          exact mean gradient), which costs a factor ~1/(1-a) in d/dln y near
-          p = 1 and ~1/a in d/dp near p = 2 against forming it directly.
-
-Concentrated data (small phi, saddle scale Z from 4e3 to 4e15, at p = 1.5
-against a closed form): float64 density 2.7e-16, gradients 3.0e-16; float32
-1.3e-7 and 1.6e-7.
-
-tweedie_logpdf_fixed_p, same metrics, d/dln mu and d/dln phi only:
-float64   density 8.2e-13, d/dln mu 3.7e-16, d/dln phi 6.0e-12.
+Concentrated data (Z from 4e3 to 4e15, p = 1.5): density 2.7e-16 and gradients
+3.0e-16 in float64, 1.3e-7 and 1.6e-7 in float32.
+tweedie_logpdf_fixed_p: float64 density 8.2e-13, d/dln mu 3.7e-16, d/dln phi
+6.0e-12; concentrated 2.7e-16 in float64, 2.4e-7 in float32.
 float32               density  d/dln mu  d/dln phi
           p < 1.1     4.0e-4   1.4e-7    4.0e-3
           p < 1.3     2.6e-5   1.8e-7    5.7e-5
           p >= 1.3    1.8e-6   1.8e-7    6.1e-6
-          Concentrated data: float64 2.7e-16, float32 2.4e-7.
 """
 
 import decimal
@@ -87,8 +65,7 @@ def _rel(got, ref):
 
 
 def _eval(fn, xs, dtype, device):
-    """fn at xs in dtype: the value and the gradient in each argument, all
-    checked finite first (max() would drop a nan from the worst case)."""
+    """fn's value and gradients at xs in dtype, checked finite (max() drops nan)."""
     args = [torch.tensor(x, dtype=dtype, device=device, requires_grad=True)
             for x in xs]
     v = fn(*args)
@@ -99,8 +76,7 @@ def _eval(fn, xs, dtype, device):
 
 
 def _to32(name, x):
-    """x rounded to float32; p to the nearest float32 inside the box, since
-    1.05 and 1.95 round outward."""
+    """x in float32, p moved inside the box (1.05 and 1.95 round outward)."""
     t = torch.tensor(x, dtype=torch.float32)
     if name == "p" and not P_LO <= t.item() <= P_HI:
         t = torch.nextafter(t, torch.tensor(1.5))
@@ -177,8 +153,7 @@ def test_tweedie_logpdf_float32(device):
 
 
 def test_table_limit_is_c1():
-    # T -> c1(rho) = -(2 rho + 1)(rho + 2)/(24 rho) as Z -> inf: the end no
-    # fixture reaches, in closed form
+    # T -> c1(rho) = -(2 rho + 1)(rho + 2)/(24 rho) as Z -> inf, beyond the fixtures
     for t in torch.linspace(-1, 1, 41, dtype=torch.float64):
         r = torch.exp(t * A1)
         _, coefs = _split(r)
@@ -249,8 +224,7 @@ def test_mixed_batch_gradients_are_finite():
 
 @pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
 def test_gradients_are_finite_where_the_value_is(dtype):
-    # each lane's other branch runs on stand-in inputs, so it cannot turn a
-    # finite value's gradient into nan, also at extreme arguments
+    # each lane's other branch sees stand-ins, so it cannot make a gradient nan
     y_big = 1e100 if dtype == torch.float64 else 1e20
     y = _t([0.0, 1e-30, 1e-6, 0.3, 4.0, 1e6, y_big], dtype)
     scales = ((1e-2, 1e-2), (1e-2, 1e2), (1e2, 1e-2), (1e2, 1e2), (2.0, 0.8))
@@ -267,9 +241,7 @@ def test_gradients_are_finite_where_the_value_is(dtype):
 
 
 def test_second_derivatives():
-    # with create_graph the series' derivatives are recomputed with tracked
-    # ops; check d2/dp2 and d2/dp dmu against central differences of the
-    # (exact) first derivative
+    # against central differences of the exact first derivative
     y = _t([0.0, 0.05, 1.3, 4.0, 30.0])
 
     def grad_p(p, mu):
@@ -288,10 +260,8 @@ def test_second_derivatives():
 
 
 def test_closed_form_partials_match_finite_differences():
-    # _HalfDeviance's partials are derived by hand, in each of its three
-    # forms (y/mu = 1.0002 and 1.2 near, 0.65 and 2 mid, 4.5 and 0.1 far),
-    # and with c, dc carrying a's dependence; gradgradcheck covers the
-    # create_graph path. Then the density, whose forms meet at the split.
+    # each _HalfDeviance form (y/mu 1.0002, 1.2 near; 0.65, 2 mid; 4.5, 0.1 far),
+    # then the density across the split
     def half_deviance(a, mu, y):
         c, dc = _near_coefs(a)
         return _HalfDeviance.apply(a, c, dc, mu, y)
@@ -311,10 +281,8 @@ def test_closed_form_partials_match_finite_differences():
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_half_deviance_by_form(device):
-    # chebax's test_half_deviance_against_mpmath, the same draws, reference
-    # in decimal at 50 digits: d/2 and its y-partial in each form, relative
-    # error. The density's tests cannot see a form's error under the direct
-    # sum's. Measured worst (value, y-partial), CPU and GPU: near 4.2e-16,
+    # chebax's draws, decimal at 50 digits: each form's error, which the density
+    # hides. Measured worst (value, y-partial), CPU and GPU: near 4.2e-16,
     # 8.1e-16; mid 4.3e-14 (a = 0.95), 8.1e-16; far 1.4e-14, 3.2e-15.
     np = pytest.importorskip("numpy")
     decimal.getcontext().prec = 50
@@ -347,8 +315,7 @@ def test_half_deviance_by_form(device):
 
 
 def test_normalizes_with_its_moments():
-    # P(0) + int f = 1, E Y = mu, Var Y = phi mu^p: the whole density at once,
-    # integrated in v = ln y (near 0 the density is ~ y^(rho - 1))
+    # in v = ln y, since the density is ~ y^(rho - 1) near 0
     integrate = pytest.importorskip("scipy.integrate")
     for p, mu, phi in ((1.1, 1.0, 1.0), (1.5, 2.0, 0.5), (1.9, 0.5, 2.0),
                        (1.3, 5.0, 0.2)):
@@ -390,8 +357,7 @@ def test_distribution():
 
 def test_torch_compile_matches_eager():
     y = _t([0.0, 0.05, 1.3, 4.0, 300.0])
-    # one graph: python numbers must not break it, as an .item() would
-    # (fullgraph=True does not catch that one, it only warns)
+    # explain(), since fullgraph=True only warns about an .item()
     for fn in (tweedie_logpdf, tweedie_logpdf_fixed_p):
         assert torch._dynamo.explain(fn)(1.37, 2.0, 0.8, y).graph_break_count == 0
         eager = fn(1.37, 2.0, 0.8, y)
@@ -402,8 +368,6 @@ def test_torch_compile_matches_eager():
 @pytest.mark.skipif(torch.__version__ < (2, 5), reason="torch 2.4's AOT autograd "
                     "partitioner takes minutes on these graphs (over 150 s at 2.4.1)")
 def test_torch_compile_gradients_match_eager():
-    # with gradients: the restricted call's autograd.Function, the full call's
-    # through every op
     y = _t([0.0, 0.05, 1.3, 4.0, 300.0])
     mu = torch.full_like(y, 2.0, requires_grad=True)
     for fn in (tweedie_logpdf, tweedie_logpdf_fixed_p):
@@ -419,9 +383,7 @@ def test_torch_compile_gradients_match_eager():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 @pytest.mark.filterwarnings("ignore:Synchronization debug mode")
 def test_python_numbers_do_not_wait_for_the_gpu():
-    # torch.tensor(1.4, device="cuda") waits for all queued GPU work, on
-    # every call. The first call at a python number waits once: it copies
-    # the tables and keeps what depends on the number alone
+    # only the first call at a python number may wait
     y = torch.tensor([0.0, 0.3, 2.0, 40.0], device="cuda")
     mu = torch.full_like(y, 2.0, requires_grad=True)
     tweedie_logpdf(1.4, mu, 0.8, y)
@@ -440,8 +402,6 @@ def test_python_numbers_do_not_wait_for_the_gpu():
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_python_and_tensor_parameters_agree(device):
-    # a python p or rho reads the terms kept at its first call, a tensor
-    # computes them on every call: the same bits, values and gradients
     y = [0.0, 1e-3, 0.3, 2.0, 40.0, 1e4]
     for dtype in (torch.float64, torch.float32):
         def run(fn, s, *xs):
@@ -483,10 +443,8 @@ for dev in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):
 
 
 def test_a_first_call_in_inference_mode_leaves_gradients_working():
-    # autograd cannot save inference tensors, so nothing cached may be one;
-    # a fresh process, since this suite has filled the caches already. env
-    # is os.environ: conda's numpy sets MKL_THREADING_LAYER in the C
-    # environment only, and a child importing torch first refuses it
+    # a fresh process, as the caches are full; env= since conda's numpy sets
+    # MKL_THREADING_LAYER C-side only, which a child importing torch refuses
     out = subprocess.run([sys.executable, "-c", INFERENCE_FIRST],
                          capture_output=True, text=True, env=dict(os.environ))
     assert out.returncode == 0, out.stderr[-2000:]
@@ -494,8 +452,7 @@ def test_a_first_call_in_inference_mode_leaves_gradients_working():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_cuda_graph_capture():
-    # p = 1.4 is kept before the capture; p = 1.71 is first seen in it and
-    # computed in the graph instead, since capture allows no waiting
+    # 1.4 is kept before the capture; 1.71, first seen in it, runs in the graph
     y = torch.tensor([0.0, 0.3, 2.0, 40.0], device="cuda")
     mu = torch.full_like(y, 2.0)
     tweedie_logpdf(1.4, mu, 0.8, y)
@@ -511,11 +468,7 @@ def test_cuda_graph_capture():
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_concentrated_densities(device):
-    # Far past what the series reference reaches. The deviance near the mean
-    # used to come from ln y - ln mu and a difference of two expm1 terms,
-    # which lost delta = (y - mu)/mu: float32 gave 2.53 for -5.28 at the
-    # second point. float64 against mpmath, float32 against float64 at the
-    # same inputs, gradients in ln mu, ln phi, ln y as above.
+    # the closed-form deviance near the mean gives 2.53 for -5.28 here in float32
     for dtype, (bar_f, bar_g) in BAR_CONCENTRATED.items():
         worst_f = worst_g = 0.0
         for c in FX["concentrated"]:
@@ -537,14 +490,10 @@ def test_concentrated_densities(device):
 
 
 def test_extreme_deviance_scales():
-    # y/mu overflows at y = 1e10, mu = 1e-300 under a finite density: at
-    # p = 1.5 the half-deviance is 2y/sqrt(mu) - 4 sqrt(y) + 2 sqrt(mu), and
-    # the rest of ln f is below its last digit
+    # y/mu overflows; ln f is -(2y/sqrt(mu) - 4 sqrt(y) + 2 sqrt(mu)) to the last digit
     got = tweedie_logpdf(1.5, 1e-300, 1.0, _t(1e10)).item()
     assert abs(got / -2e160 - 1) <= 1e-15, got
-    # phi = 1e-200 at the mean: ln f = -ln(2 pi phi)/2 + O(1/Z). The p and phi
-    # gradients were nan, from unselected forms whose partials overflow there
-    # and from autograd squaring phi in d(h/phi)/dphi
+    # phi = 1e-200 at the mean: ln f = -ln(2 pi phi)/2 + O(1/Z), finite gradients
     args = [_t(v).requires_grad_(True) for v in (1.5, 1.0, 1e-200, 1.0)]
     v = tweedie_logpdf(*args)
     gp, gmu, gphi, gy = (g.item() for g in torch.autograd.grad(v, args))
@@ -555,11 +504,8 @@ def test_extreme_deviance_scales():
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_mean_gradient_is_exact_at_extreme_scales(device):
-    # Tweedie is an exponential dispersion family, so d ln f/dmu is exactly
-    # (y - mu) / (phi mu^p), 0 at y = mu. Autograd of the deviance squares mu,
-    # which overflows at mu = 1e-220, and as two separate terms the mu
-    # derivatives cancelled only to rounding at y = mu (1e286 at mu = 1e-300).
-    # Reference in decimal at 50 digits; measured worst 2.7e-16 over 72 points.
+    # d ln f/dmu = (y - mu) / (phi mu^p) exactly; decimal at 50 digits, measured
+    # worst 2.7e-16 over 72 points
     decimal.getcontext().prec = 50
     dec = decimal.Decimal
     for p, mu, phi in [(p, mu, phi) for p in (P_LO, 1.5, P_HI)
@@ -582,8 +528,7 @@ def test_mean_gradient_is_exact_at_extreme_scales(device):
 
 
 def _eval_fixed_p(xs, dtype, device):
-    """tweedie_logpdf_fixed_p at xs = (p, mu, phi, y) in dtype: the value,
-    mu d/dmu and phi d/dphi, checked finite first."""
+    """tweedie_logpdf_fixed_p's value, mu d/dmu and phi d/dphi, checked finite."""
     p, mu, phi, y = xs
     args = [torch.tensor(x, dtype=dtype, device=device, requires_grad=True) for x in (mu, phi)]
     v = tweedie_logpdf_fixed_p(p, *args, torch.tensor(y, dtype=dtype, device=device))
@@ -636,8 +581,7 @@ def test_fixed_p_concentrated(device):
 
 
 def test_fixed_p_partials_match_finite_differences():
-    # the partials are derived by hand, per form: y = 0, below the split,
-    # above it near the mean (2.0004 at phi = 0.01) and away from it
+    # y = 0, below the split, above it near the mean (2.0004) and away from it
     y = _t([0.0, 0.05, 1.3, 4.0, 30.0, 2.0004, 9.0])
     phi0 = _t([0.8, 0.8, 0.8, 0.8, 0.8, 0.01, 0.05])
     for p in (1.06, 1.37, 1.9):
@@ -665,7 +609,6 @@ def test_fixed_p_restrictions():
 
 
 def test_fixed_p_matches_tweedie_logpdf():
-    # the same values, broadcasting and dtype rules as tweedie_logpdf
     mu = _t([0.5, 1.0, 2.0, 4.0])
     y = _t([[0.0], [0.3], [9.0]])
     got = tweedie_logpdf_fixed_p(1.6, mu, 0.8, y)
