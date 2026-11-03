@@ -37,6 +37,9 @@ whether it is ported from chebax, first here, or staying here.
 - `_<family>_data.py` is written by `tools/export.py`; never edit it by hand.
 - Copied alone into another package (the family module renamed), a family's
   files must work with chebtorch unimportable. Its docstring names the files.
+- Another public module of a family (`tweedie_fixed_p.py`) follows the same
+  rules and is copied the same way, with what it imports. The family module may
+  import from it, never the reverse, so the narrow copy stays small.
 
 ## Commands
 
