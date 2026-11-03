@@ -1,8 +1,8 @@
 # CLAUDE.md: operating instructions for chebtorch
 
 Read `PROJECT.md` first (design, the vendoring contract, milestones), and
-follow `docs/coding-style.md` (adapted from chebax's) for formatting, naming,
-docstrings, numerics and tests. Read `../CLAUDE.md` before anything else: the
+follow `docs/coding-style.md` (chebax's conventions, with the two differences
+it states) for formatting, naming, docstrings, numerics and tests. Read `../CLAUDE.md` before anything else: the
 OSS git identity, the `gh` rules, never pushing to upstream projects, the
 `open-source` conda env, and the writing style all apply here. PyPI releases
 are Andres's action.
@@ -37,7 +37,7 @@ whether it is ported from chebax, first here, or staying here.
 - `_<family>_data.py` is written by `tools/export.py`; never edit it by hand.
 - Copied alone into another package (the family module renamed), a family's
   files must work with chebtorch unimportable. Its docstring names the files.
-- Another public module of a family (`tweedie_fixed_p.py`) follows the same
+- Another public module of a family (`tweedie_frozen.py`) follows the same
   rules and is copied the same way, with what it imports. The family module may
   import from it, never the reverse, so the narrow copy stays small.
 

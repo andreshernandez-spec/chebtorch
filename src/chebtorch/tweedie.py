@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # From chebtorch: https://github.com/andreshernandez-spec/chebtorch
 """Tweedie log-density for power 1.05 <= p <= 1.95, and Wright's Phi(rho, 0; z)
-under it. To use it elsewhere, copy it with tweedie_fixed_p.py, _tweedie_data.py
+under it. To use it elsewhere, copy it with tweedie_frozen.py, _tweedie_data.py
 and cheb_common.py into one package; they import only math, torch and each other.
-tweedie_logpdf_fixed_p lives in tweedie_fixed_p.py, which copies without this file.
+tweedie_logpdf_frozen lives in tweedie_frozen.py, which copies without this file.
 
 For p in (1, 2) the law has mass exp(-lambda) at 0 and, for y > 0,
 
@@ -35,10 +35,11 @@ from torch.distributions import constraints
 
 from .cheb_common import Memo, cheb, device_of, scalar, tensor_of, work_dtype
 from ._tweedie_data import N_TERMS, P_HI, P_LO, RHO_MAX, RHO_MIN
-from .tweedie_fixed_p import (_HALF_LOG_2PI, _NEAR, _near_coefs, _own, _split,
-                              tweedie_logpdf_fixed_p)
+from .tweedie_frozen import (_HALF_LOG_2PI, _NEAR, _near_coefs, _own, _split,
+                             tweedie_logpdf_frozen)
 
-__all__ = ["Tweedie", "log_wright_bessel0", "tweedie_logpdf", "tweedie_logpdf_fixed_p"]
+__all__ = ["Tweedie", "log_wright_bessel0", "tweedie_logpdf", "tweedie_logpdf_frozen",
+           "tweedie_logpdf_scalar"]
 
 _LANES = 1 << 16
 
@@ -246,8 +247,14 @@ def log_wright_bessel0(rho, z):
 
 def tweedie_logpdf(p, mu, phi, y):
     """ln of the Tweedie density at y > 0, and ln P(Y = 0) at y = 0, for p in
-    [1.05, 1.95] and broadcasting mu > 0, phi > 0, y >= 0. Derivatives in p, mu,
-    phi and y (where y > 0) to second order."""
+    [1.05, 1.95] and broadcasting mu > 0, phi > 0, y >= 0: tweedie_logpdf_scalar,
+    the family's one per-call path."""
+    return tweedie_logpdf_scalar(p, mu, phi, y)
+
+
+def tweedie_logpdf_scalar(p, mu, phi, y):
+    """tweedie_logpdf for one p per call, a python number or a one-element
+    tensor. Derivatives in p, mu, phi and y (where y > 0) to second order."""
     work, out = work_dtype(y, mu, phi, p)
     dev = device_of(y, mu, phi, p)
     mu, phi, y = (tensor_of(v, work, dev) for v in (mu, phi, y))
