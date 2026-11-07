@@ -163,18 +163,19 @@ DATA = {"TABLE_TAIL": (0.98969..., ...)}
   only correct one: the Tweedie direct sum (one-pass weighted derivatives, O(N)
   memory), and the inverse CDFs (implicit function theorem; never differentiate the
   fixed-iteration solver).
-- Measured (`benchmarks/tweedie_gpu.py`, 2026-10-28, RTX 3080 Laptop, float32):
-  eager is 5.0-6.1 ms for values and 16-19 ms with gradients up to N = 2^16
-  with a tensor p (510 and 1466 CUDA kernels per call), 2.1-4.5 / 5.0-9.3 ms
-  with a python p, whose terms are kept (279 and 552 kernels, gradients in mu
-  and phi), and 0.77-0.99 / 1.35-1.86 ms for `tweedie_logpdf_fixed_p` (81 and
-  110 kernels), against 0.24-0.42 / 1.23-2.36 ms for the saddlepoint and 0.1
-  / 0.7-1.2 ms for neuralforecast's kernel-only loss. Compiled, 0.11-0.29 /
-  0.37-1.7 ms after 5-66 s of cold compile per shape. A training loop that
+- Measured (`benchmarks/tweedie_gpu.py`, 2026-11-07, RTX 3080 Laptop, float32):
+  eager is 3.2-5.0 ms for values and 10-17 ms with gradients up to N = 2^16
+  with a tensor p (516 and 1501 CUDA kernels per call), 2.0-2.6 / 4.7-5.7 ms
+  with a python p, whose terms are kept (285 and 592 kernels, gradients in mu
+  and phi), and 0.64-0.78 / 1.1-1.7 ms for `tweedie_logpdf_fixed_p` (81 and
+  128 kernels), against 0.26-0.27 / 1.3-1.4 ms for the saddlepoint and 0.1
+  / 0.7-0.8 ms for neuralforecast's kernel-only loss. Compiled, 0.11-0.24 /
+  0.35-1.1 ms after 4-73 s of cold compile per shape. A training loop that
   does not compile pays the eager cost every step; below the saddlepoint's
   eager cost, the remaining route is one fused kernel. Compiled float64 is
-  slow while the series is one pass over the lanes (6-8 ms at 2^16 against
-  3-7 eager): inductor fuses the whole density into its reduction.
+  slow with a python or fixed p while the series is one pass over the lanes
+  (6.1-7.9 ms at 2^16 against 3.0-3.9 eager): inductor fuses the whole
+  density into its reduction.
   `torch.library.custom_op` with registered autograd is M2.
 
 ### 4.4 Per-element shape parameters (later, if a consumer needs them)

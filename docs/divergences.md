@@ -2,7 +2,7 @@
 
 chebax decides what a function computes (PROJECT.md section 6). This file lists
 every place chebtorch does otherwise, with the reason and the chebax side.
-Checked against chebax main at a17f1bf, 2026-10-29.
+Checked against chebax main at e112724 (v0.5.0), 2026-11-07.
 
 ## To go back to chebax
 
