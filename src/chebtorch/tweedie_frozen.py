@@ -185,7 +185,12 @@ def _frozen_density(terms, mu, phi, y, grads):
     d_in = lam_yt - rho1 * mean_n
     d_out = h_phi - 0.5 + (t + sw * dt) * w
     d_phi = torch.where(outer, d_out, torch.where(pos, d_in, lam)) / phi
-    return log_f, delta * m1 / phi, d_phi
+    # mu^(a-1) delta / phi, or (y - mu) h^2 with h = mu^(-p/2) / sqrt(phi) where
+    # mu^(a-1) delta leaves the float range before phi brings it back
+    s_mu = delta * m1
+    far = ~torch.isfinite(s_mu) | ((s_mu.abs() < torch.finfo(s_mu.dtype).tiny) & (y != mu))
+    h = torch.pow(mu, -0.5 * p) / torch.sqrt(phi)
+    return log_f, torch.where(far, (y - mu) * h * h, s_mu / phi), d_phi
 
 
 class _FrozenDensity(torch.autograd.Function):

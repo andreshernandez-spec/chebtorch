@@ -10,14 +10,16 @@ chebtorch's tweedie_logpdf with a tensor and a python p; tweedie_logpdf_frozen.
 Also compile time, CUDA kernels and peak memory per eager call, and the saddle's
 error per observation at p = 1.2, 1.5, 1.8.
 
-Findings (2026-10-28, RTX 3080 Laptop, torch 2.13; results/tweedie_gpu.txt):
-- Eager chebtorch is launch-bound. float32 with gradients at 2^16: 19 ms with a
-  tensor p (1466 kernels), 9.3 ms with a python p, 1.9 ms for
-  tweedie_logpdf_frozen (110 kernels), against 2.4 ms for the saddle.
-- Compiled float32 up to 2^16, with gradients: 0.4-0.5 ms for
-  tweedie_logpdf_frozen, 0.3-0.4 ms for the kernel loss. Cold compiles 5-66 s.
+Findings (2026-11-07, RTX 3080 Laptop, torch 2.13; results/tweedie_gpu.txt):
+- Eager chebtorch is launch-bound. float32 with gradients at 2^16: 17 ms with a
+  tensor p (1501 kernels), 5.7 ms with a python p, 1.7 ms for
+  tweedie_logpdf_frozen (128 kernels), against 1.4 ms for the saddle. Up to
+  2^16 these move by up to 30% between runs, with the host's load.
+- Compiled float32 up to 2^16, with gradients: 0.35-0.37 ms for
+  tweedie_logpdf_frozen, 0.24-0.31 ms for the kernel loss. Cold compiles 4-73 s.
 - Compiled float64 can lose to eager: inductor fuses the density into the
-  series' reduction (tweedie_logpdf_frozen 89 ms against 43 at 2^20).
+  series' reduction (tweedie_logpdf_frozen 89 ms against 42 at 2^20, a python
+  p 92 against 51).
 - The saddle is above the exact log-density by 0.08 to 0.11 per observation;
   its errors above 1 are all at y <= 0.29.
 - torch.compile(dynamic=True) was slower than eager from 2^16 up, so the

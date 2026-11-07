@@ -28,11 +28,11 @@ and phi only, for a third to a quarter of the work per call.
 
 | family | functions | box | float64 accuracy |
 |---|---|---|---|
-| Tweedie | `tweedie_logpdf(p, mu, phi, y)`, `tweedie_logpdf_frozen(p)(mu, phi, y)`, `Tweedie(mu, phi, power)`, `log_wright_bessel0(rho, z)` | p in [1.05, 1.95], uniform per call | density 9.9e-13, d/dp 6.1e-11, d/dln mu 4.0e-16, ln W 7.3e-16 |
+| Tweedie | `tweedie_logpdf(p, mu, phi, y)`, `tweedie_logpdf_frozen(p)(mu, phi, y)`, `Tweedie(mu, phi, power)`, `log_wright_bessel0(rho, z)` | p in [1.05, 1.95], uniform per call | density 8.0e-13, d/dp 3.9e-11, d/dln mu 3.7e-16, ln W 7.3e-16 |
 
 Accuracy is the measured worst case against mpmath at 40 digits,
 |err| / max(1, |ref|). Each family's test file records its floors and bars,
-float32 included (for Tweedie, float32 is weakest below p = 1.1: density 4e-4).
+float32 included (for Tweedie, float32 is weakest below p = 1.1: density 5.5e-4).
 
 ## Copying one family into your project
 

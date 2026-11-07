@@ -4,15 +4,15 @@ errors peak, and random points. Errors are |err| / max(1, |ref|), gradients in
 mu, phi and y as x df/dx. float32 is compared with float64 at the same float32
 inputs, since rounding p alone moves the density by ~1e-4 at p = 1.05.
 
-Measured worst (2026-10-28, torch 2.13 on CPU and an RTX 3080, torch 2.4.1 on
+Measured worst (2026-11-07, torch 2.13 on CPU and an RTX 3080, torch 2.4.1 on
 CPU; bars about 4x), peaking at p = 1.05 where lgamma(rho n) reaches ~4000:
-float64   ln W 7.3e-16, d/dz 1.0e-14, d/drho 1.2e-14; density 9.9e-13,
-          d/dp 6.1e-11, d/dln mu 4.0e-16, d/dln phi 9.8e-12, d/dln y 6.0e-12
+float64   ln W 7.3e-16, d/dz 1.0e-14, d/drho 1.2e-14; density 8.0e-13,
+          d/dp 3.9e-11, d/dln mu 3.7e-16, d/dln phi 6.5e-12, d/dln y 5.1e-12
 float32   ln W 5.6e-7, d/dz 1.7e-6, d/drho 4.4e-6 (z within float32's range)
                       density  d/dp     d/dln mu  d/dln phi  d/dln y
-          p < 1.1     4.1e-4   2.0e-2   1.6e-7    5.3e-3     3.8e-3
-          p < 1.3     2.3e-5   5.1e-4   1.8e-7    7.7e-5     4.4e-5
-          p >= 1.3    1.5e-6   7.3e-5   1.8e-7    3.5e-6     2.1e-6
+          p < 1.1     5.5e-4   2.3e-2   1.4e-7    4.6e-3     1.5e-3
+          p < 1.3     2.6e-5   7.2e-4   1.8e-7    6.5e-5     3.2e-5
+          p >= 1.3    2.6e-6   7.3e-5   1.8e-7    7.1e-6     5.0e-6
 Concentrated data (Z from 4e3 to 4e15, p = 1.5): density 2.7e-16 and gradients
 3.0e-16 in float64, 1.3e-7 and 1.6e-7 in float32.
 tweedie_logpdf_frozen: float64 density 8.2e-13, d/dln mu 3.7e-16, d/dln phi
@@ -37,7 +37,7 @@ import torch
 import chebtorch
 from chebtorch.cheb_common import cheb
 from chebtorch._tweedie_data import A1
-from chebtorch.tweedie import (P_HI, P_LO, Tweedie, _HalfDeviance, _near_coefs, _split,
+from chebtorch.tweedie import (P_HI, P_LO, Tweedie, _DevianceOver, _near_coefs, _split,
                                log_wright_bessel0, tweedie_logpdf, tweedie_logpdf_frozen,
                                tweedie_logpdf_scalar)
 
@@ -52,10 +52,10 @@ DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 BAR_W64 = {"w": 3e-15, "dz": 4e-14, "drho": 5e-14}
 BAR_W32 = {"w": 2.5e-6, "dz": 7e-6, "drho": 1.8e-5}
 # (density, (d/dp, d/dln mu, d/dln phi, d/dln y)); float32 by band of p
-BAR_F64 = (4e-12, (2.5e-10, 1.6e-15, 4e-11, 2.4e-11))
-BAR_F32 = ((1.1, 1.6e-3, (8e-2, 6.5e-7, 2.1e-2, 1.5e-2)),
-           (1.3, 9e-5, (2e-3, 7e-7, 3e-4, 1.8e-4)),
-           (2.0, 6e-6, (3e-4, 7e-7, 1.4e-5, 8.5e-6)))
+BAR_F64 = (3.2e-12, (1.6e-10, 1.5e-15, 2.6e-11, 2e-11))
+BAR_F32 = ((1.1, 2.2e-3, (9e-2, 5.6e-7, 1.8e-2, 6e-3)),
+           (1.3, 1e-4, (2.9e-3, 7e-7, 2.6e-4, 1.3e-4)),
+           (2.0, 1e-5, (3e-4, 7e-7, 2.8e-5, 2e-5)))
 BAR_CONCENTRATED = {torch.float64: (1.2e-15, 1.2e-15), torch.float32: (5e-7, 6.5e-7)}
 # tweedie_logpdf_frozen: (density, d/dln mu, d/dln phi); float32 by band of p
 BAR_FIXED_F64 = (3.5e-12, 1.6e-15, 2.4e-11)
@@ -268,18 +268,23 @@ def test_second_derivatives():
 
 
 def test_closed_form_partials_match_finite_differences():
-    # each _HalfDeviance form (y/mu 1.0002, 1.2 near; 0.65, 2 mid; 4.5, 0.1 far),
-    # then the density across the split
-    def half_deviance(a, mu, y):
+    # each deviance form (y/mu 1.0002, 1.2 near; 0.65, 2 mid; 4.5, 0.1 far), over
+    # phi with and without the series lanes' y^a term, then the density across
+    # the split
+    def deviance_over(a, mu, y, phi, series):
         c, dc = _near_coefs(a)
-        return _HalfDeviance.apply(a, c, dc, mu, y)
+        return _DevianceOver.apply(a, c, dc, mu, y, phi, series)
 
     mu = _t([2.0] * 6).requires_grad_(True)
     y = _t([2.0004, 2.4, 1.3, 4.0, 9.0, 0.2]).requires_grad_(True)
     for a0 in (0.05, 0.37, 0.95):
-        args = (_t(a0).requires_grad_(True), mu, y)
-        assert torch.autograd.gradcheck(half_deviance, args)
-        assert torch.autograd.gradgradcheck(half_deviance, args)
+        for series, phi0 in ((False, 0.3), (True, 40.0)):
+            phi = _t([phi0] * 6).requires_grad_(True)
+            lanes = torch.full((6,), series)
+            args = (_t(a0).requires_grad_(True), mu, y, phi)
+            f = lambda *v: deviance_over(*v, lanes)
+            assert torch.autograd.gradcheck(f, args)
+            assert torch.autograd.gradgradcheck(f, args)
     y = _t([0.05, 1.3, 2.0001, 3.1, 4.0, 30.0]).requires_grad_(True)
     for p0 in (1.06, 1.37, 1.9):
         args = (_t(p0).requires_grad_(True), mu, _t(0.8).requires_grad_(True), y)
@@ -308,7 +313,9 @@ def test_half_deviance_by_form(device):
             mu = np.exp(rng.uniform(-10, 10, 400))
             y = mu * (1 + rng.uniform(lo, hi, 400))
             yt = torch.tensor(y, device=device, requires_grad=True)
-            h = _HalfDeviance.apply(at, c, dc, torch.tensor(mu, device=device), yt)
+            one = torch.ones_like(yt)
+            h = _DevianceOver.apply(at, c, dc, torch.tensor(mu, device=device), yt, one,
+                                    torch.zeros_like(one, dtype=torch.bool))
             h_y, = torch.autograd.grad(h.sum(), yt)
             for m, v, hv, gv in zip(mu.tolist(), y.tolist(), h.tolist(), h_y.tolist()):
                 m, v = dec(m), dec(v)
@@ -540,6 +547,52 @@ def test_mean_gradient_is_exact_at_extreme_scales(device):
                 assert g[1] == math.copysign(math.inf, ref), (p, mu, phi, y, g[1])
             else:
                 assert abs(dec(g[1]) - ref) <= dec(1.1e-15) * abs(ref), (p, mu, phi, y, g[1])
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_mean_gradient_rescued_by_dispersion(device):
+    # mu^(a-1) delta overflowed before the division by phi: inf at
+    # (1.5, 1e-200, 1e200, 1e20) for 1e120 (chebax#67). Decimal at 50 digits,
+    # measured worst 3.3e-16 (bar 1.3e-15)
+    decimal.getcontext().prec = 50
+    dec = decimal.Decimal
+    for c in [(1.5, 1e-200, 1e200, 1e20), (1.05, 1e-250, 1e250, 1e10),
+              (1.95, 1e-150, 1e150, 1e30), (1.5, 1e-300, 1e290, 1e-10)]:
+        p, mu, phi, y = c
+        ref = float((dec(y) - dec(mu)) / (dec(phi) * dec(mu) ** dec(p)))
+        for f in (tweedie_logpdf, frozen_logpdf):
+            m = torch.tensor(mu, dtype=torch.float64, device=device, requires_grad=True)
+            v = f(p, m, *(torch.tensor(x, dtype=torch.float64, device=device) for x in (phi, y)))
+            g, = torch.autograd.grad(v, m)
+            assert torch.isfinite(v), (f.__name__, c)
+            assert abs(g.item() / ref - 1) <= 1.3e-15, (f.__name__, c, g.item(), ref)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_y_gradient_near_zero(device):
+    # -ln y and the series' leading rho ln y cancelled their 1/y slopes: in
+    # float32 d/dy at y = 1e-7 was 0.19 for 1, in float64 off 4.4e-5 at 1e-12
+    # (chebax#67). At p = 1.5, mu = 4, phi = 1: ln f = -4 - y + ln 4 + ln S,
+    # S = sum_k (4y)^k / ((k+1)! k!), so d/dy = S'/S - 1, decimal at 50 digits.
+    # Measured worst 5.8e-15 in float64, 1.3e-6 in float32 (bars 2.3e-14, 5.3e-6)
+    decimal.getcontext().prec = 50
+    dec = decimal.Decimal
+
+    def ref(y):
+        y, s, ds, term = dec(y), dec(0), dec(0), dec(1)
+        for k in range(40):
+            s += term
+            ds += term * k / y
+            term *= 4 * y / ((k + 2) * (k + 1))
+        return float(ds / s - 1)
+
+    for dtype, ys, bar in ((torch.float64, (1e-12, 1e-9, 1e-7, 1e-4), 2.3e-14),
+                           (torch.float32, (1e-7, 1e-5, 1e-3), 5.3e-6)):
+        for y in ys:
+            t = torch.tensor(y, dtype=dtype, device=device, requires_grad=True)
+            g, = torch.autograd.grad(tweedie_logpdf(1.5, 4.0, 1.0, t), t)
+            r = ref(t.item())
+            assert abs(g.item() - r) <= bar * max(1.0, abs(r)), (dtype, y, g.item(), r)
 
 
 def _eval_fixed_p(xs, dtype, device):
