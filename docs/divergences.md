@@ -8,7 +8,7 @@ Checked against chebax main at e112724 (v0.5.0), 2026-11-07.
 
 | family | what | here | chebax |
 |---|---|---|---|
-| tweedie | `tweedie_logpdf_fixed_p` (`tweedie_fixed_p.py`): p a python number, the constants that depend on p alone formed in float64, each series cut to the terms the dtype resolves, partials formed in the forward pass | 51d8423 (#5) | not started: a new public call in chebax, not decided |
+| tweedie | `tweedie_logpdf_frozen` (`tweedie_frozen.py`): p a python number, the constants that depend on p alone formed in float64, each series cut to the terms the dtype resolves, partials formed in the forward pass | 51d8423 (#5) | not started: a new public call in chebax, not decided |
 
 ## Staying here
 

@@ -20,15 +20,15 @@ d.log_prob(torch.tensor([0.0, 1.0, 3.0])), d.sample((5,))
 
 A power that is not learned is cheaper as a python number, as in `Tweedie`
 above: what depends on it alone is computed at its first call and kept. For
-fitting a mean and a dispersion at such a power, `tweedie_logpdf_fixed_p`
-gives the same values with derivatives in mu and phi only, for a third to a
-quarter of the work per call.
+fitting a mean and a dispersion at such a power, `tweedie_logpdf_frozen(p)`
+returns a callable of (mu, phi, y) with the same values and derivatives in mu
+and phi only, for a third to a quarter of the work per call.
 
 ## What's in
 
 | family | functions | box | float64 accuracy |
 |---|---|---|---|
-| Tweedie | `tweedie_logpdf(p, mu, phi, y)`, `tweedie_logpdf_fixed_p(p, mu, phi, y)`, `Tweedie(mu, phi, power)`, `log_wright_bessel0(rho, z)` | p in [1.05, 1.95], uniform per call | density 8.0e-13, d/dp 3.9e-11, d/dln mu 3.7e-16, ln W 7.3e-16 |
+| Tweedie | `tweedie_logpdf(p, mu, phi, y)`, `tweedie_logpdf_frozen(p)(mu, phi, y)`, `Tweedie(mu, phi, power)`, `log_wright_bessel0(rho, z)` | p in [1.05, 1.95], uniform per call | density 8.0e-13, d/dp 3.9e-11, d/dln mu 3.7e-16, ln W 7.3e-16 |
 
 Accuracy is the measured worst case against mpmath at 40 digits,
 |err| / max(1, |ref|). Each family's test file records its floors and bars,
@@ -45,10 +45,10 @@ nothing. The family module can take any name; the other two keep theirs (a new
 directory with an empty `__init__.py` keeps them out of your namespace). Each
 family's docstring names its files, and CI runs exactly this copy.
 
-A family can have a second, narrower module. `tweedie_fixed_p.py` holds
-`tweedie_logpdf_fixed_p` and copies with only `_tweedie_data.py` and
+A family can have a second, narrower module. `tweedie_frozen.py` holds
+`tweedie_logpdf_frozen` and copies with only `_tweedie_data.py` and
 `cheb_common.py`, without `tweedie.py`, which imports the pieces they share from
-it. A copy of `tweedie.py` therefore takes `tweedie_fixed_p.py` along.
+it. A copy of `tweedie.py` therefore takes `tweedie_frozen.py` along.
 
 ## License
 

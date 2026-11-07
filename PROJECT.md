@@ -66,7 +66,7 @@ This is the design's centre. Every vendorable family file obeys it, and CI check
    sha256 and mpmath version (both from the table's META), and the sha256 of the
    data, which a test recomputes. Every file carries a copyright and SPDX line.
 6. **The copy test.** CI copies each family's files (its module and the modules it
-   imports), and each other public module's (`tweedie_fixed_p.py`, a narrower
+   imports), and each other public module's (`tweedie_frozen.py`, a narrower
    entry that copies without `tweedie.py`), into an empty temporary package, the module under another name
    (`hostpkg/losses/tweedie_loss.py`), imports it there with chebtorch unimportable
    and runs its fixtures. That is the "copy the files, change nothing" promise,
@@ -134,11 +134,15 @@ DATA = {"TABLE_TAIL": (0.98969..., ...)}
   `tweedie_logpdf`, `log_wright_bessel0`, `vonmises_cdf`). Open question 1.
 - A `torch.distributions.Distribution` subclass in the same file where a family
   defines a distribution (Tweedie; later Gamma/Beta/StudentT with cdf and icdf).
-- Where a common use needs less than the general call, a second call restricted
-  to it, with the same values within the same floors: `tweedie_logpdf_fixed_p`
-  fits mu and phi at a python-number power (first derivatives in mu and phi
-  only), cutting each series to the terms the dtype resolves at that power and
-  forming the partials in closed form in the forward pass.
+- The forms are chebax's (its docs/coding-style.md, and ours): the plain
+  `name(params, x)`, `name_scalar` for one parameter value per call,
+  `name_array` where a family takes a value per element, and `name_frozen(params)`,
+  the callable of x for python-number parameters with its constants cached, the
+  torch form of chebax's cached recipe. Where a common use needs less than the
+  general call, the frozen form may be restricted to it with the same values
+  within the same floors: `tweedie_logpdf_frozen(p)` fits mu and phi (first
+  derivatives in those only), cutting each series to the terms the dtype
+  resolves at that power and forming the partials in the forward pass.
 
 ### 4.2 dtype, device, errors
 
@@ -167,7 +171,7 @@ DATA = {"TABLE_TAIL": (0.98969..., ...)}
   eager is 3.2-5.0 ms for values and 10-17 ms with gradients up to N = 2^16
   with a tensor p (516 and 1501 CUDA kernels per call), 2.0-2.6 / 4.7-5.7 ms
   with a python p, whose terms are kept (285 and 592 kernels, gradients in mu
-  and phi), and 0.64-0.78 / 1.1-1.7 ms for `tweedie_logpdf_fixed_p` (81 and
+  and phi), and 0.64-0.78 / 1.1-1.7 ms for `tweedie_logpdf_frozen` (81 and
   128 kernels), against 0.26-0.27 / 1.3-1.4 ms for the saddlepoint and 0.1
   / 0.7-0.8 ms for neuralforecast's kernel-only loss. Compiled, 0.11-0.24 /
   0.35-1.1 ms after 4-73 s of cold compile per shape. A training loop that
@@ -230,6 +234,12 @@ in torch is decided here.
 - A chebtorch PR that changes what is computed says which it is: ported from
   chebax (the commit), first here (the entry and the chebax PR), or staying
   here (why).
+- **Conventions are chebax's** (Andres, 2026-11-03): names and the plain,
+  `_scalar`, `_array` and `_frozen` forms, docstrings and comments, numerics
+  and tests, as docs/coding-style.md states them here. The two differences:
+  chebtorch fits and generates nothing, and what torch needs that jax does
+  not (kernel counts, caches, host syncs, `autograd.Function`, compile) is
+  decided here.
 
 ## 7. Repository layout
 
@@ -242,7 +252,7 @@ src/chebtorch/
     __init__.py         lazy re-exports (PEP 562), so `import chebtorch` loads no tables
     cheb_common.py      helpers every family imports (section 3)
     tweedie.py          a family's code
-    tweedie_fixed_p.py  its fixed-power entry, copyable without tweedie.py
+    tweedie_frozen.py   its frozen-power entry, copyable without tweedie.py
     _tweedie_data.py    its tables, written by tools/export.py
     gammainc.py, _gammainc_data.py, besselk.py, ...
     _weights/           raw float64 blobs for the library-only families

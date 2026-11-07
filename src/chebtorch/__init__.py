@@ -12,10 +12,12 @@ _EXPORTS = {
     "Tweedie": "tweedie",
     "log_wright_bessel0": "tweedie",
     "tweedie_logpdf": "tweedie",
-    "tweedie_logpdf_fixed_p": "tweedie_fixed_p",
+    "tweedie_logpdf_frozen": "tweedie_frozen",
+    "tweedie_logpdf_scalar": "tweedie",
 }
 
-__all__ = ["Tweedie", "log_wright_bessel0", "tweedie_logpdf", "tweedie_logpdf_fixed_p"]
+__all__ = ["Tweedie", "log_wright_bessel0", "tweedie_logpdf", "tweedie_logpdf_frozen",
+           "tweedie_logpdf_scalar"]
 assert sorted(__all__) == sorted(_EXPORTS)
 
 

@@ -6,19 +6,19 @@ Time per call of the mean NLL of N = 2^12, 2^16 and 2^20 draws (mu = 2, phi = 1,
 p = 1.5), float32 and float64, values alone and with gradients in p, phi and a
 per-element mu. Losses: kernel, neuralforecast's -(y mu^(1-p)/(1-p) -
 mu^(2-p)/(2-p)), which has no phi or normalizing term; saddle, exact at y = 0;
-chebtorch's tweedie_logpdf with a tensor and a python p; tweedie_logpdf_fixed_p.
+chebtorch's tweedie_logpdf with a tensor and a python p; tweedie_logpdf_frozen.
 Also compile time, CUDA kernels and peak memory per eager call, and the saddle's
 error per observation at p = 1.2, 1.5, 1.8.
 
 Findings (2026-11-07, RTX 3080 Laptop, torch 2.13; results/tweedie_gpu.txt):
 - Eager chebtorch is launch-bound. float32 with gradients at 2^16: 17 ms with a
   tensor p (1501 kernels), 5.7 ms with a python p, 1.7 ms for
-  tweedie_logpdf_fixed_p (128 kernels), against 1.4 ms for the saddle. Up to
+  tweedie_logpdf_frozen (128 kernels), against 1.4 ms for the saddle. Up to
   2^16 these move by up to 30% between runs, with the host's load.
 - Compiled float32 up to 2^16, with gradients: 0.35-0.37 ms for
-  tweedie_logpdf_fixed_p, 0.24-0.31 ms for the kernel loss. Cold compiles 4-73 s.
+  tweedie_logpdf_frozen, 0.24-0.31 ms for the kernel loss. Cold compiles 4-73 s.
 - Compiled float64 can lose to eager: inductor fuses the density into the
-  series' reduction (tweedie_logpdf_fixed_p 89 ms against 42 at 2^20, a python
+  series' reduction (tweedie_logpdf_frozen 89 ms against 42 at 2^20, a python
   p 92 against 51).
 - The saddle is above the exact log-density by 0.08 to 0.11 per observation;
   its errors above 1 are all at y <= 0.29.
@@ -86,8 +86,11 @@ def exact_nll_python_p(p, mu, phi, y):
     return -chebtorch.tweedie_logpdf(P_TIMED, mu, phi, y).mean()
 
 
+_FROZEN = chebtorch.tweedie_logpdf_frozen(P_TIMED)
+
+
 def exact_nll_fixed_p(p, mu, phi, y):
-    return -chebtorch.tweedie_logpdf_fixed_p(P_TIMED, mu, phi, y).mean()
+    return -_FROZEN(mu, phi, y).mean()
 
 
 LOSSES = {"kernel (neuralforecast)": kernel_nll, "saddle": saddle_nll,

@@ -1,9 +1,15 @@
 # Coding style
 
-Adapted from chebax's guide for a PyTorch library. It applies to handwritten
-library code, tools, tests and benchmarks, and is the review standard for new
-work and for code being changed. The vendoring contract is in
-[PROJECT.md](../PROJECT.md) section 3.
+chebax's conventions, for a PyTorch library (Andres, 2026-11-03). What they
+say about names and the plain, `_scalar`, `_array` and `_frozen` forms,
+docstrings and comments, numerics and tests holds here as there, with two
+differences: chebtorch fits and generates nothing (tables come from chebax
+through tools/export.py), and what torch needs that jax does not (kernel
+counts, caches, host syncs, `autograd.Function`, compile) is decided here
+(PROJECT.md section 6). This guide applies to handwritten library code, tools,
+tests and benchmarks, and is the review standard for new work and for code
+being changed. The vendoring contract is in [PROJECT.md](../PROJECT.md)
+section 3.
 
 ## Formatting and imports
 
@@ -40,14 +46,19 @@ with their domains. Use descriptive names for masks, stand-ins and branches:
 
 | Form | Meaning |
 | --- | --- |
-| `name(params, x)` | A function: tensors in, tensors out, parameters first |
+| `name(params, x)` | The function: tensors in, tensors out, parameters first; picks `_scalar` or `_array` from the parameters |
+| `name_scalar(params, x)` | One value per parameter for the whole call: a python number, checked against the box (raising `ValueError`) with its per-call work cached, or a one-element tensor, nan outside the box |
+| `name_array(params, x)` | A parameter value per element, broadcast with x, where a family has that path |
+| `name_frozen(params)` | The callable of x for python-number parameters, checked when frozen, its constants cached per dtype and device: the torch form of chebax's cached recipe, and the form a model keeps |
 | `log_name(...)` | A logarithm computed without first forming a value that underflows or overflows |
 | `Name(params)` | A `torch.distributions.Distribution`, for a family that defines one |
 
-Names follow scipy.special where scipy has the function, chebax otherwise. A
-shape parameter that selects the table is uniform per call: a python number,
-checked against the box (raising `ValueError`), or a one-element tensor, which
-gives nan outside the box.
+The plain name always exists and never picks `_frozen`. A family exposes a
+suffixed name for every path it has and only for those (tweedie: `_scalar` and
+`_frozen`). Where a path has its own implementation it gets its own module
+named after the suffix (`tweedie_frozen.py`), which the family module may
+import from, never the reverse. Names follow scipy.special where scipy has the
+function, chebax otherwise.
 
 ## Functions and module organization
 
