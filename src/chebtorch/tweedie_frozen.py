@@ -1,16 +1,17 @@
 # Copyright (c) 2026, Andres Hernandez
 # SPDX-License-Identifier: BSD-3-Clause
 # From chebtorch: https://github.com/andreshernandez-spec/chebtorch
-"""tweedie_logpdf_fixed_p: the Tweedie log-density at a power 1.05 <= p <= 1.95
-given as a python number, for fitting mu and phi. To use it elsewhere, copy it
-with _tweedie_data.py and cheb_common.py into one package; the three import only
-math, torch and each other, and tweedie.py is not needed.
+"""tweedie_logpdf_frozen(p): the Tweedie log-density at a python-number power
+1.05 <= p <= 1.95, as a callable of (mu, phi, y) for fitting mu and phi. To use
+it elsewhere, copy it with _tweedie_data.py and cheb_common.py into one package;
+the three import only math, torch and each other, and tweedie.py is not needed.
 
-It evaluates tweedie.py's density (formulas and regions there), cut to the terms
-the dtype resolves at this p, with the mu and phi partials formed in the forward
-pass. Same values within the same floors as tweedie_logpdf (tests/test_tweedie.py).
-Results take the widest floating dtype given, half precision computed in
-float32, on the first tensor's device; invalid arguments give nan.
+The callable evaluates tweedie.py's density (formulas and regions there), cut
+to the terms the dtype resolves at this p, with the mu and phi partials formed
+in the forward pass. Same values within the same floors as tweedie_logpdf
+(tests/test_tweedie.py). Results take the widest floating dtype given, half
+precision computed in float32, on the first tensor's device; invalid arguments
+give nan.
 
 tweedie.py imports the pieces both use from here: the split at Z1, the
 near-mean deviance series and the stand-in helper.
@@ -23,7 +24,7 @@ import torch
 from .cheb_common import Memo, Tables, cheb, device_of, scalar, tensor_of, work_dtype
 from ._tweedie_data import A1, DATA, N_TERMS, P_HI, P_LO, S1, SHAPES, ZA
 
-__all__ = ["tweedie_logpdf_fixed_p"]
+__all__ = ["tweedie_logpdf_frozen"]
 
 _HALF_LOG_2PI = 0.5 * math.log(2 * math.pi)
 _NEAR = 0.25      # |y/mu - 1| up to which the half-deviance is a series
@@ -67,7 +68,7 @@ def _tail_coefs_python(rho):
     return out
 
 
-def _fixed_p_sizes(p, eps):
+def _frozen_sizes(p, eps):
     """Term counts (series, deviance series, tail) that keep a python p's error
     at eps. Python floats only, so no host sync and no graph break."""
     rho = (2 - p) / (p - 1)
@@ -98,14 +99,14 @@ def _chebder(c):
     return torch.stack(d[:max(n - 1, 1)])
 
 
-def _fixed_p_constants(p, dtype, device):
-    """What tweedie_logpdf_fixed_p needs of a python p, its series cut to
-    _fixed_p_sizes."""
+def _frozen_constants(p, dtype, device):
+    """What tweedie_logpdf_frozen needs of a python p, its series cut to
+    _frozen_sizes."""
     if torch.compiler.is_compiling():
         # dynamo takes minutes over the sizing loops; a fused graph affords every term
         k_series, k_near, k_tail = N_TERMS, _N_NEAR, SHAPES["TABLE_TAIL"][0]
     else:
-        k_series, k_near, k_tail = _fixed_p_sizes(p, torch.finfo(dtype).eps)
+        k_series, k_near, k_tail = _frozen_sizes(p, torch.finfo(dtype).eps)
     inv_b = 1 / (p - 1)
     p = tensor_of(p, dtype, device)
     rho = (2 - p) / (p - 1)
@@ -120,16 +121,16 @@ def _fixed_p_constants(p, dtype, device):
             _near_coefs(a)[0][:k_near], torch.arange(k_near, dtype=dtype, device=device))
 
 
-_fixed_p_terms = Memo(_fixed_p_constants, raw=True)
-_FIXED_P_BYTES = 64 << 20   # temporaries of one pass in _fixed_p_lanes
+_frozen_terms = Memo(_frozen_constants, raw=True)
+_FROZEN_BYTES = 64 << 20   # temporaries of one pass in _frozen_lanes
 
 
-def _fixed_p_lanes(terms, u, x, dn, grads):
-    """Per lane, _FIXED_P_BYTES at a time: ln S at u, T at x and the deviance
+def _frozen_lanes(terms, u, x, dn, grads):
+    """Per lane, _FROZEN_BYTES at a time: ln S at u, T at x and the deviance
     series at dn, plus with grads the series' mean n and T'(x)."""
     n, neg_c, coefs, dcoefs, k, c_near, j = terms[12:]
     width = n.numel() + k.numel() + j.numel()
-    step = max(1, _FIXED_P_BYTES // (2 * width * u.element_size()))
+    step = max(1, _FROZEN_BYTES // (2 * width * u.element_size()))
     if torch.compiler.is_compiling():
         # one pass: inductor fuses the terms, and each pass adds graph to compile
         step = max(1, u.numel())
@@ -151,7 +152,7 @@ def _fixed_p_lanes(terms, u, x, dn, grads):
                  for xs in out)
 
 
-def _fixed_p_density(terms, mu, phi, y, grads):
+def _frozen_density(terms, mu, phi, y, grads):
     """(ln f, d/dmu, d/dphi) without autograd; every form runs in every lane.
 
     d/dmu = (y - mu) / (phi mu^p). phi d/dphi is lambda at y = 0,
@@ -172,7 +173,7 @@ def _fixed_p_density(terms, mu, phi, y, grads):
     delta = (y - mu) / mu
     near = delta.abs() <= _NEAR
     dn = torch.where(near, delta, 0.0)
-    log_s, mean_n, t, dt, s_near = _fixed_p_lanes(terms, u, (sw - 1).clamp(-1.0, 1.0),
+    log_s, mean_n, t, dt, s_near = _frozen_lanes(terms, u, (sw - 1).clamp(-1.0, 1.0),
                                                   dn, grads)
     h_phi = torch.where(near, ma * dn * dn * s_near,
                         ma * (torch.expm1(a * torch.log(y / mu)) - a * delta) / aa1) / phi
@@ -187,46 +188,58 @@ def _fixed_p_density(terms, mu, phi, y, grads):
     return log_f, delta * m1 / phi, d_phi
 
 
-class _FixedPDensity(torch.autograd.Function):
-    """_fixed_p_density with partials from the forward pass, first order only."""
+class _FrozenDensity(torch.autograd.Function):
+    """_frozen_density with partials from the forward pass, first order only."""
 
     @staticmethod
     def forward(ctx, terms, mu, phi, y):
-        log_f, d_mu, d_phi = _fixed_p_density(terms, mu, phi, y, True)
+        log_f, d_mu, d_phi = _frozen_density(terms, mu, phi, y, True)
         ctx.save_for_backward(d_mu, d_phi)
         return log_f
 
     @staticmethod
     def backward(ctx, grad):
         if torch.is_grad_enabled():
-            raise RuntimeError("tweedie_logpdf_fixed_p has no second derivatives; "
+            raise RuntimeError("tweedie_logpdf_frozen has no second derivatives; "
                                "use tweedie_logpdf")
         d_mu, d_phi = ctx.saved_tensors
         return None, grad * d_mu, grad * d_phi, None
 
 
-def tweedie_logpdf_fixed_p(p, mu, phi, y):
-    """tweedie_logpdf at a python p, for fitting mu and phi: the same values
-    within the same floors, first derivatives in mu and phi only, y/mu finite.
-    It keeps only the terms the dtype resolves (in float32 at p = 1.5, 26, 11 and
-    5 of 64, 26 and 32) and forms the partials in the forward pass."""
+def tweedie_logpdf_frozen(p):
+    """The callable (mu, phi, y) -> tweedie_logpdf(p, mu, phi, y) at a python p,
+    for fitting mu and phi: the same values within the same floors, first
+    derivatives in mu and phi only, y/mu finite. p is checked here; the
+    callable keeps only the terms the dtype resolves (in float32 at p = 1.5,
+    26, 11 and 5 of 64, 26 and 32) and forms the partials in the forward pass."""
     if isinstance(p, torch.Tensor):
-        raise TypeError("tweedie_logpdf_fixed_p takes p as a python number; "
+        raise TypeError("tweedie_logpdf_frozen takes p as a python number; "
                         "use tweedie_logpdf for a tensor p")
+    p = float(p)
+    if not P_LO <= p <= P_HI:
+        raise ValueError(f"tweedie_logpdf_frozen covers p in [{P_LO}, {P_HI}], got {p}")
+
+    def logpdf(mu, phi, y):
+        return _frozen_logpdf(p, mu, phi, y)
+
+    return logpdf
+
+
+def _frozen_logpdf(p, mu, phi, y):
     work, out = work_dtype(y, mu, phi)
     dev = device_of(y, mu, phi)
-    p = scalar(p, work, dev, "tweedie_logpdf_fixed_p", "p", P_LO, P_HI)
+    p = scalar(p, work, dev, "tweedie_logpdf_frozen", "p", P_LO, P_HI)
     mu, phi, y = (tensor_of(v, work, dev) for v in (mu, phi, y))
     if y.requires_grad:
-        raise ValueError("tweedie_logpdf_fixed_p has no derivative in y; detach y, "
+        raise ValueError("tweedie_logpdf_frozen has no derivative in y; detach y, "
                          "or use tweedie_logpdf")
     mu, phi, y = torch.broadcast_tensors(mu, phi, y)
-    terms = _fixed_p_terms(p, work, dev)
+    terms = _frozen_terms(p, work, dev)
     valid = (mu > 0) & (phi > 0) & (y >= 0)
     # stand-ins for the lanes the result masks
     mu_s, phi_s, y_s = _own(valid, mu, phi, y)
     if torch.is_grad_enabled() and (mu.requires_grad or phi.requires_grad):
-        log_f = _FixedPDensity.apply(terms, mu_s, phi_s, y_s)
+        log_f = _FrozenDensity.apply(terms, mu_s, phi_s, y_s)
     else:
-        log_f = _fixed_p_density(terms, mu_s, phi_s, y_s, False)[0]
+        log_f = _frozen_density(terms, mu_s, phi_s, y_s, False)[0]
     return torch.where(valid, log_f, math.nan).to(out)

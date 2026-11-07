@@ -102,16 +102,18 @@ for c in fx["log_wright_bessel0"] if hasattr(m, "log_wright_bessel0") else []:
     v = m.log_wright_bessel0(c["rho"], t(c["z"])).item()
     assert math.isfinite(v), c             # max() below would drop a nan
     worst = max(worst, abs(v - c["value"]) / max(1.0, abs(c["value"])))
-for name in ("tweedie_logpdf", "tweedie_logpdf_fixed_p"):
+calls = {"tweedie_logpdf": lambda c: m.tweedie_logpdf(c["p"], c["mu"], c["phi"], t(c["y"])),
+         "tweedie_logpdf_frozen": lambda c: m.tweedie_logpdf_frozen(c["p"])(c["mu"], c["phi"], t(c["y"]))}
+for name, call in calls.items():
     for c in fx["tweedie_logpdf"] if hasattr(m, name) else []:
-        v = getattr(m, name)(c["p"], c["mu"], c["phi"], t(c["y"])).item()
+        v = call(c).item()
         assert math.isfinite(v), c
         worst = max(worst, abs(v - c["value"]) / max(1.0, abs(c["value"])))
 print(worst)
 """
 
 
-@pytest.mark.parametrize("entry", ["tweedie", "tweedie_fixed_p"])
+@pytest.mark.parametrize("entry", ["tweedie", "tweedie_frozen"])
 def test_copied_files_work_alone(tmp_path, entry):
     # the entry module renamed, in a package that knows nothing of chebtorch
     pkg = tmp_path / "hostpkg" / "losses"
@@ -128,5 +130,5 @@ def test_copied_files_work_alone(tmp_path, entry):
     assert float(out.stdout) <= 3e-12            # the float64 density bar
 
 
-def test_fixed_p_copies_without_tweedie():
-    assert "tweedie" not in family_files("tweedie_fixed_p")
+def test_frozen_copies_without_tweedie():
+    assert "tweedie" not in family_files("tweedie_frozen")
