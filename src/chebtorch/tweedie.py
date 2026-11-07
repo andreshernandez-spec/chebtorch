@@ -24,8 +24,8 @@ calls) or a one-element tensor (nan outside the box). Results take the widest
 floating dtype given, half precision computed in float32, on the first tensor's
 device. Invalid arguments give nan. Derivatives are reverse mode only.
 
-Worst error against mpmath, |err| / max(1, |ref|): density 1e-12 in float64 and
-4e-4 in float32, both at p = 1.05; tests/test_tweedie.py has the rest.
+Worst error against mpmath, |err| / max(1, |ref|): density 8e-13 in float64 and
+5.5e-4 in float32, both at p = 1.05; tests/test_tweedie.py has the rest.
 """
 
 import math
@@ -43,22 +43,24 @@ __all__ = ["Tweedie", "log_wright_bessel0", "tweedie_logpdf", "tweedie_logpdf_fi
 _LANES = 1 << 16
 
 
-def _series(rho, u):
-    """ln sum_{n=1..N} exp(n u - lgamma(n+1) - lgamma(rho n)) and its u and rho
-    derivatives, in one pass over _LANES lanes at a time."""
+def _series(rho, u, lead=0):
+    """ln sum_{n=1..N} exp((n - lead) u - lgamma(n+1) - lgamma(rho n)) and its u
+    and rho derivatives, in one pass over _LANES lanes at a time. lead = 1 is
+    ln W - u."""
     n = torch.arange(1, N_TERMS + 1, dtype=u.dtype, device=u.device)
     c = torch.lgamma(n + 1) + torch.lgamma(rho * n)
     g = n * torch.digamma(rho * n)               # -d/drho of term n's exponent
+    k = n - lead
     out = []
     for uc in u.reshape(-1, 1).split(_LANES):
-        t = n * uc - c
+        t = k * uc - c
         # the shift cancels in all three results, so it needs no derivative
         m = t.detach().amax(-1, keepdim=True)
         # in place: no backward needs t
         e = t.sub_(m).exp_()
         s = e.sum(-1)
         # sums, not matmuls: under TF32 a float32 matmul rounds to 10 bits
-        out.append((m[:, 0] + torch.log(s), (e * n).sum(-1) / s, -(e * g).sum(-1) / s))
+        out.append((m[:, 0] + torch.log(s), (e * k).sum(-1) / s, -(e * g).sum(-1) / s))
     return tuple(torch.cat(x).reshape(u.shape) for x in zip(*out))
 
 
@@ -67,17 +69,18 @@ class _LogSeries(torch.autograd.Function):
     every term. Exact second derivatives with create_graph."""
 
     @staticmethod
-    def forward(ctx, rho, u):
-        val, d_u, d_rho = _series(rho, u)
+    def forward(ctx, rho, u, lead=0):
+        val, d_u, d_rho = _series(rho, u, lead)
         ctx.save_for_backward(rho, u, d_u, d_rho)
+        ctx.lead = lead
         return val
 
     @staticmethod
     def backward(ctx, grad):
         rho, u, d_u, d_rho = ctx.saved_tensors
         if torch.is_grad_enabled():
-            _, d_u, d_rho = _series(rho, u)
-        return (grad * d_rho).sum(), grad * d_u
+            _, d_u, d_rho = _series(rho, u, ctx.lead)
+        return (grad * d_rho).sum(), grad * d_u, None
 
 
 @Memo
@@ -137,27 +140,53 @@ def _half_deviance(a, c, mu, y):
     return torch.where(near, series, torch.where(mid, mid_form, far))
 
 
-class _HalfDeviance(torch.autograd.Function):
-    """_half_deviance with closed-form partials: autograd of its forms squares
-    mu, which overflows at mu = 1e-220. c and dc carry no gradient, so the a
-    partial is total. Exact second derivatives with create_graph."""
+def _numerator(a, c, mu, y, series):
+    """d/2, less y^a / (a (a-1)) in the series lanes."""
+    h = _half_deviance(a, c, mu, y)
+    return torch.where(series, h - torch.pow(y, a) / (a * (a - 1)), h)
+
+
+def _mean_slope(a, mu, phi, y):
+    """(y - mu) / (phi mu^p) as mu^(a-1) delta / phi. Where mu^(a-1) delta
+    leaves the float range before phi brings it back (1e320 for 1e120 at
+    mu = 1e-200, phi = 1e200, y = 1e20), as (y - mu) h^2, h = mu^(-p/2) / sqrt(phi).
+    Each form sees 1 in the other's lanes, for create_graph."""
+    t = torch.pow(mu, a - 1) * ((y - mu) / mu)
+    far = ~torch.isfinite(t) | ((t.abs() < torch.finfo(t.dtype).tiny) & (y != mu))
+    md, yd = _own(~far, mu, y)
+    mf, yf, ff = _own(far, mu, y, phi)
+    h = torch.pow(mf, -0.5 * (2 - a)) / torch.sqrt(ff)
+    return torch.where(far, (yf - mf) * h * h, torch.pow(md, a - 1) * ((yd - md) / md) / phi)
+
+
+class _DevianceOver(torch.autograd.Function):
+    """d / (2 phi), less y^a / (a (a-1) phi) in the series lanes (the inner
+    branch's lambda + y/theta, without mu^(1-p)/phi terms that cancel), with
+    closed-form partials: autograd of the deviance's forms squares mu, which
+    overflows at mu = 1e-220, and squares phi, which underflows at phi = 1e-200.
+    c and dc carry no gradient, so the a partial is total. Exact second
+    derivatives with create_graph."""
 
     @staticmethod
-    def forward(ctx, a, c, dc, mu, y):
-        ctx.save_for_backward(a, c, dc, mu, y)
-        return _half_deviance(a, c, mu, y)
+    def forward(ctx, a, c, dc, mu, y, phi, series):
+        q = _numerator(a, c, mu, y, series) / phi
+        ctx.save_for_backward(a, c, dc, mu, y, phi, series, q)
+        return q
 
     @staticmethod
     def backward(ctx, grad):
-        a, c, dc, mu, y = ctx.saved_tensors
+        a, c, dc, mu, y, phi, series, q = ctx.saved_tensors
         near, mid, delta = _deviance_lanes(mu, y)
         x = torch.log1p(delta)
         m1 = torch.pow(mu, a - 1)
-        d_y = torch.where(near | mid, m1 * torch.expm1((a - 1) * x),
-                          torch.pow(y, a - 1) - m1) / (a - 1)
+        # in the series lanes d/dy is -mu^(a-1)/(a-1) exactly: formed as the
+        # difference of two y^(a-1)/(a-1) terms it keeps y^(a-1) eps
+        d_y = torch.where(series, -m1, torch.where(near | mid, m1 * torch.expm1((a - 1) * x),
+                                                   torch.pow(y, a - 1) - m1)) / (a - 1)
+        g = grad / phi
         d_a = None
         if ctx.needs_input_grad[0]:
-            ma, ya, log_mu = torch.pow(mu, a), torch.pow(y, a), torch.log(mu)
+            ma, ya, log_mu, log_y = torch.pow(mu, a), torch.pow(y, a), torch.log(mu), torch.log(y)
             dn = torch.where(near, delta, 0.0)
             near_a = ma * dn * dn * (log_mu * _horner(c, dn) + _horner(dc, dn))
             e, den = torch.expm1(a * x), a * (a - 1)
@@ -165,26 +194,14 @@ class _HalfDeviance(torch.autograd.Function):
             mid_a = (log_mu * ma * num / den
                      + ma * ((x * (e + 1) - delta) * den - num * (2 * a - 1)) / (den * den))
             far = ya / a - y * m1
-            far_a = ((ya * torch.log(y) / a - ya / (a * a) - y * m1 * log_mu) / (a - 1)
+            far_a = ((ya * log_y / a - ya / (a * a) - y * m1 * log_mu) / (a - 1)
                      - far / ((a - 1) * (a - 1)) + ma * log_mu / a - ma / (a * a))
-            d_a = (grad * torch.where(near, near_a, torch.where(mid, mid_a, far_a))).sum()
-        # exact in every lane, so not the masked delta
-        return d_a, None, None, grad * (-m1 * ((y - mu) / mu)), grad * d_y
-
-
-class _Over(torch.autograd.Function):
-    """h / phi with d/dphi = -(h/phi)/phi. Autograd squares phi, which
-    underflows at phi = 1e-200 and makes a zero deviance a nan gradient."""
-
-    @staticmethod
-    def forward(ctx, h, phi):
-        ctx.save_for_backward(h, phi)
-        return h / phi
-
-    @staticmethod
-    def backward(ctx, grad):
-        h, phi = ctx.saved_tensors
-        return grad / phi, -(grad * (h / phi)) / phi
+            h_a = torch.where(near, near_a, torch.where(mid, mid_a, far_a))
+            y_a = ya * log_y / den - ya * (2 * a - 1) / (den * den)
+            d_a = (g * torch.where(series, h_a - y_a, h_a)).sum()
+        # (dh - q dphi) / phi: autograd's d/dphi squares phi
+        return (d_a, None, None, grad * -_mean_slope(a, mu, phi, y), g * d_y,
+                -(grad * q) / phi, None)
 
 
 def _log_w(rho, z1, u1, coefs, z):
@@ -210,20 +227,22 @@ def _log_density(p_terms, mu, phi, y):
     mu0, phi0 = _own(~pos, mu, phi)
     log_f_zero = -torch.pow(mu0, a) / (phi0 * a)
     mu_p, phi_p, y_p = _own(pos, mu, phi, y)
-    neg_half_dev = -_Over.apply(_HalfDeviance.apply(a, c, dc, mu_p, y_p), phi_p)
     big_z = torch.pow(y_p, a) / (phi_p * a * pm1)
     inner = pos & (big_z <= z1)
     outer = pos & ~inner
     # inner: -lambda - y/theta as -d/(2 phi) + y^a / (a (a-1) phi), z without mu
+    neg_dev = -_DevianceOver.apply(a, c, dc, mu_p, y_p, phi_p, inner)
     phi_i, y_i = _own(inner, phi, y)
     log_y = torch.log(y_i)
-    u = rho * (log_y - log_pm1) - (1 + rho) * torch.log(phi_i) - log_a
-    log_f_inner = (neg_half_dev + _Over.apply(torch.pow(y_i, a) / (a * (a - 1)), phi_i)
-                   - log_y + _LogSeries.apply(rho, u))
+    u0 = -rho * log_pm1 - (1 + rho) * torch.log(phi_i) - log_a
+    # -ln y + u as (rho - 1) ln y + u0, the series' leading u taken out: apart,
+    # their 1/y slopes cancel (d/dy 0.19 for 1 at p = 1.5, y = 1e-7 in float32)
+    log_f_inner = (neg_dev + (rho - 1) * log_y + u0
+                   + _LogSeries.apply(rho, rho * log_y + u0, 1))
     # outer: 1/Z from phi directly, not a reciprocal of Z ~ 1/phi
     phi_t, y_t = _own(outer, phi, y)
     w = torch.where(outer, phi_t * a * pm1 / torch.pow(y_t, a), 1 / z1)
-    log_f_tail = (neg_half_dev - 0.5 * (torch.log(phi_t) + p * torch.log(y_t))
+    log_f_tail = (neg_dev - 0.5 * (torch.log(phi_t) + p * torch.log(y_t))
                   - _HALF_LOG_2PI + cheb(2 * (z1 * w) - 1, coefs) * w)
     return torch.where(inner, log_f_inner, torch.where(outer, log_f_tail, log_f_zero))
 
